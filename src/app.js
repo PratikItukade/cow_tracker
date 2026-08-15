@@ -67,7 +67,7 @@ function homeCard(routeName, icon, title, summary) {
 }
 
 function renderCows() {
-  renderShell(`<section class="card"><h2>Cow profiles</h2><form id="cowForm"><input name="name" placeholder="Tag / name" required><input name="photo" placeholder="Photo URL"><select name="status"><option>In milk</option><option>Heifer</option><option>Dry</option></select><button>Add cow</button></form><div class="list">${state.cows.map(profileCard).join('') || '<p>No cows added yet.</p>'}</div></section>`);
+  renderShell(`<section class="card"><h2>Cow profiles</h2><form id="cowForm"><input name="name" placeholder="Tag / name" required><input name="photoFile" type="file" accept="image/*" capture="environment"><select name="status"><option>In milk</option><option>Heifer</option><option>Dry</option></select><button>Add cow</button></form><div class="list">${state.cows.map(profileCard).join('') || '<p>No cows added yet.</p>'}</div></section>`);
 }
 
 function profileCard(cow) {
@@ -106,10 +106,20 @@ function renderExport() {
 
 function bar(row) { return `<div><span>${row.label}</span><meter min="0" max="100" value="${row.quantity}"></meter><b>${row.quantity} L</b></div>`; }
 function formData(form) { return Object.fromEntries(new FormData(form).entries()); }
+function readCowPhoto(input) {
+  const file = input?.files?.[0];
+  if (!file) return '';
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
 function bindSharedEvents() {
   document.querySelectorAll('.featureCard').forEach((card) => card.onclick = () => navigate(card.dataset.route));
   document.querySelector('#loginBtn')?.addEventListener('click', () => { state.user = { email: document.querySelector('#email').value }; saveState(state); render(); });
-  document.querySelector('#cowForm')?.addEventListener('submit', (e) => { e.preventDefault(); state.cows.push({ id: uid(), ...formData(e.target), breeding: [], health: [] }); saveState(state); render(); });
+  document.querySelector('#cowForm')?.addEventListener('submit', async (e) => { e.preventDefault(); const data = formData(e.target); const photo = await readCowPhoto(e.target.photoFile); delete data.photoFile; state.cows.push({ id: uid(), ...data, photo, breeding: [], health: [] }); saveState(state); render(); });
   document.querySelector('#milkForm')?.addEventListener('submit', (e) => { e.preventDefault(); state.milk.push({ id: uid(), ...formData(e.target) }); saveState(state); render(); });
   document.querySelectorAll('.breedForm').forEach((form) => form.onsubmit = (e) => { e.preventDefault(); state.cows.find((c) => c.id === form.dataset.cow).breeding.push(formData(form)); saveState(state); render(); });
   document.querySelectorAll('.healthForm').forEach((form) => form.onsubmit = (e) => { e.preventDefault(); state.cows.find((c) => c.id === form.dataset.cow).health.push(formData(form)); saveState(state); render(); });
