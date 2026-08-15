@@ -131,5 +131,5 @@ function exportCsv() {
 }
 
 window.addEventListener('hashchange', render);
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
 render();
