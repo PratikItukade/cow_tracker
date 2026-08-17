@@ -218,6 +218,10 @@ function profileCard(cow) {
           ${renderCowHealthList(cow.health)}
         </div>
       </div>
+
+      <div class="cardFooter">
+        <button class="deleteCowBtn" data-cow-id="${cow.id}" data-cow-name="${cow.name}">🗑 Delete ${cow.name}</button>
+      </div>
     </div>
   </details>`;
 }
@@ -283,6 +287,20 @@ function bindSharedEvents() {
         openCowIds.add(cowId);
       } else {
         openCowIds.delete(cowId);
+      }
+    };
+  });
+  document.querySelectorAll('.deleteCowBtn').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const cowId = btn.dataset.cowId;
+      const cowName = btn.dataset.cowName;
+      if (window.confirm(`Are you sure you want to delete ${cowName}?`)) {
+        state.cows = state.cows.filter((c) => c.id !== cowId);
+        openCowIds.delete(cowId);
+        saveState(state);
+        render();
       }
     };
   });
