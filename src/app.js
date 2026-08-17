@@ -1,4 +1,5 @@
 import { getAlerts, initialState, summarizeMilk, today } from './domain.js';
+import { isFirebaseConfigured, loginOrCreateUser, onFirebaseAuthChange, pullUserState, pushUserState, syncUserState } from './firebase-service.js';
 const STORE_KEY = 'cow-tracker-state-v1';
 const routes = ['home', 'cows', 'milk', 'breeding', 'health', 'alerts', 'export'];
 
@@ -8,6 +9,8 @@ function loadState() {
 
 function saveState(state) {
   state.sync.pending = true;
+  state.sync.localUpdatedAt = Date.now();
+  state.sync.status = state.user?.uid && isFirebaseConfigured() ? 'Pending cloud sync' : 'Saved locally';
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
 }
 
@@ -47,7 +50,13 @@ function pageTitle(value) {
 }
 
 function authSection() {
-  return `<section class="auth card"><h2>Single-user login</h2><input id="email" type="email" placeholder="Email" value="${state.user?.email || ''}"><input id="password" type="password" placeholder="Password"><button id="loginBtn">Save login</button><p>${state.user ? `Backup account: ${state.user.email}` : 'Login enables cloud backup when sync is connected.'}</p></section>`;
+  return `<section class="auth card"><h2>Single-user login</h2><input id="email" type="email" placeholder="Email" value="${state.user?.email || ''}"><input id="password" type="password" placeholder="Password"><button id="loginBtn">Save login</button><p>${authStatusText()}</p></section>`;
+}
+
+function authStatusText() {
+  if (!isFirebaseConfigured()) return 'Firebase config missing — saved locally until src/firebase-config.js is updated.';
+  if (state.user?.email) return `Backup account: ${state.user.email} · ${state.sync?.status || 'Cloud sync ready'}`;
+  return 'Login enables Firebase cloud backup and cross-device sync.';
 }
 
 function renderHome() {
@@ -118,7 +127,7 @@ function readCowPhoto(input) {
 }
 function bindSharedEvents() {
   document.querySelectorAll('.featureCard').forEach((card) => card.onclick = () => navigate(card.dataset.route));
-  document.querySelector('#loginBtn')?.addEventListener('click', () => { state.user = { email: document.querySelector('#email').value }; saveState(state); render(); });
+  document.querySelector('#loginBtn')?.addEventListener('click', login); 
   document.querySelector('#cowForm')?.addEventListener('submit', async (e) => { e.preventDefault(); const data = formData(e.target); const photo = await readCowPhoto(e.target.photoFile); delete data.photoFile; state.cows.push({ id: uid(), ...data, photo, breeding: [], health: [] }); saveState(state); render(); });
   document.querySelector('#milkForm')?.addEventListener('submit', (e) => { e.preventDefault(); state.milk.push({ id: uid(), ...formData(e.target) }); saveState(state); render(); });
   document.querySelectorAll('.breedForm').forEach((form) => form.onsubmit = (e) => { e.preventDefault(); state.cows.find((c) => c.id === form.dataset.cow).breeding.push(formData(form)); saveState(state); render(); });
@@ -128,8 +137,51 @@ function bindSharedEvents() {
   document.querySelector('#csvBtn')?.addEventListener('click', exportCsv);
   document.querySelector('#pdfBtn')?.addEventListener('click', () => print());
 }
-function syncNow() {
-  state.sync = { pending: false, lastSyncedAt: new Date().toISOString() };
+async function login() {
+  const email = document.querySelector('#email').value;
+  const password = document.querySelector('#password').value;
+  if (!isFirebaseConfigured()) {
+    state.user = { email };
+    saveState(state);
+    render();
+    return;
+  }
+  state.sync.status = 'Signing in...';
+  render();
+  const credential = await loginOrCreateUser(email, password);
+  state.user = { uid: credential.user.uid, email: credential.user.email };
+  await pullFromCloud();
+}
+
+async function syncNow() {
+  if (!state.user?.uid || !isFirebaseConfigured()) {
+    state.sync = { ...state.sync, pending: false, lastSyncedAt: new Date().toISOString(), status: 'Local sync only — Firebase not connected' };
+    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+    render();
+    return;
+  }
+  state.sync.status = 'Syncing with Firebase...';
+  render();
+  state = await syncUserState(state.user.uid, state);
+  state.sync = { ...state.sync, pending: false, lastSyncedAt: new Date().toISOString(), status: 'Synced with Firebase' };
+  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  render();
+}
+
+async function pullFromCloud() {
+  const remote = await pullUserState(state.user.uid);
+  if (remote) {
+    state = {
+      ...state,
+      cows: remote.cows || [],
+      milk: remote.milk || [],
+      thresholds: remote.thresholds || state.thresholds,
+      sync: { pending: false, localUpdatedAt: remote.localUpdatedAt || Date.now(), lastSyncedAt: new Date().toISOString(), status: 'Loaded Firebase backup' },
+    };
+  } else {
+    await pushUserState(state.user.uid, state);
+    state.sync = { ...state.sync, pending: false, lastSyncedAt: new Date().toISOString(), status: 'Created Firebase backup' };
+  }
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
   render();
 }
@@ -140,6 +192,11 @@ function exportCsv() {
   link.click();
 }
 
+onFirebaseAuthChange(async (user) => {
+  if (!user) return;
+  state.user = { uid: user.uid, email: user.email };
+  await pullFromCloud();
+});
 window.addEventListener('hashchange', render);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
 render();
