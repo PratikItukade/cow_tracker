@@ -1,7 +1,10 @@
-import { getAlerts, initialState, summarizeMilk, today } from './domain.js';
+import { getAlerts, initialState, summarizeMilk, today, expectedCalvingDate, nextHeatDate } from './domain.js';
 import { isFirebaseConfigured, loginOrCreateUser, onFirebaseAuthChange, pullUserState, pushUserState, syncUserState } from './firebase-service.js';
+
 const STORE_KEY = 'cow-tracker-state-v1';
-const routes = ['home', 'cows', 'milk', 'breeding', 'health', 'alerts', 'export'];
+const routes = ['home', 'cows', 'milk', 'alerts', 'export'];
+let showAddCowForm = false;
+const openCowIds = new Set();
 
 function loadState() {
   return JSON.parse(localStorage.getItem(STORE_KEY) || 'null') || structuredClone(initialState);
@@ -21,6 +24,7 @@ const uid = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 
 function getRoute() {
   const value = location.hash.replace('#/', '') || 'home';
+  if (value === 'breeding' || value === 'health') return 'cows';
   return routes.includes(value) ? value : 'home';
 }
 
@@ -40,13 +44,13 @@ function renderShell(content) {
 
 function render() {
   route = getRoute();
-  const pages = { home: renderHome, cows: renderCows, milk: renderMilk, breeding: renderBreeding, health: renderHealth, alerts: renderAlerts, export: renderExport };
+  const pages = { home: renderHome, cows: renderCows, milk: renderMilk, alerts: renderAlerts, export: renderExport };
   pages[route]();
   bindSharedEvents();
 }
 
 function pageTitle(value) {
-  return ({ cows: 'Cow Profiles', milk: 'Milk Session', breeding: 'Breeding', health: 'Health', alerts: 'Alerts & Reminders', export: 'Export' })[value];
+  return ({ cows: 'Cow Profiles', milk: 'Milk Session', alerts: 'Alerts & Reminders', export: 'Export' })[value];
 }
 
 function authSection() {
@@ -64,8 +68,8 @@ function renderHome() {
   renderShell(`<section class="homeGrid">
     ${homeCard('cows', '🐄', 'Cow Profiles', `${state.cows.length} cows / heifers`)}
     ${homeCard('milk', '🥛', 'Milk Session', `${state.milk.length} session entries`)}
-    ${homeCard('breeding', '📅', 'Breeding', 'Heat, AI and pregnancy records')}
-    ${homeCard('health', '💉', 'Health', 'Vaccination and treatment logs')}
+    ${homeCard('cows', '📅', 'Breeding', 'Heat, AI and pregnancy records')}
+    ${homeCard('cows', '💉', 'Health', 'Vaccination and treatment logs')}
     ${homeCard('alerts', '🔔', 'Alerts & Reminders', `${alerts.length} active reminders`)}
     ${homeCard('export', '📤', 'Export', 'CSV and print/PDF reports')}
   </section>`);
@@ -76,32 +80,126 @@ function homeCard(routeName, icon, title, summary) {
 }
 
 function renderCows() {
-  renderShell(`<section class="card"><h2>Cow profiles</h2><form id="cowForm"><input name="name" placeholder="Tag / name" required><input name="photoFile" type="file" accept="image/*" capture="environment"><select name="status"><option>In milk</option><option>Heifer</option><option>Dry</option></select><button>Add cow</button></form><div class="list">${state.cows.map(profileCard).join('') || '<p>No cows added yet.</p>'}</div></section>`);
+  const toggleBtnText = showAddCowForm ? '✕ Close' : '+ Add Cow';
+  const addFormClass = showAddCowForm ? 'addCowSection open' : 'addCowSection hidden';
+
+  renderShell(`<section class="card">
+    <div class="cowsHeader">
+      <h2>Cow profiles</h2>
+      <button id="toggleAddCowBtn" class="btnSecondary">${toggleBtnText}</button>
+    </div>
+    <div id="addCowContainer" class="${addFormClass}">
+      <form id="cowForm" class="cowFormCard">
+        <h3>Add new cow</h3>
+        <label>Tag / Name <input name="name" placeholder="Tag / name" required></label>
+        <label>Photo <input name="photoFile" type="file" accept="image/*" capture="environment"></label>
+        <label>Status
+          <select name="status">
+            <option>In milk</option>
+            <option>Heifer</option>
+            <option>Dry</option>
+          </select>
+        </label>
+        <button type="submit">Save Cow</button>
+      </form>
+    </div>
+    <div class="list">${state.cows.map(profileCard).join('') || '<p>No cows added yet.</p>'}</div>
+  </section>`);
+}
+
+function renderCowBreedingList(breedingList = []) {
+  if (!breedingList.length) return '<p class="emptyText">No breeding records yet.</p>';
+  return `<ul class="recordList">${breedingList.map((b) => {
+    const details = [];
+    if (b.heatDate) details.push(`Heat: ${b.heatDate}`);
+    if (b.aiDate) details.push(`AI: ${b.aiDate}`);
+    if (b.pregnancyStatus) details.push(`Status: ${b.pregnancyStatus}`);
+    if (b.aiDate && b.pregnancyStatus === 'Pregnant') {
+      const calving = expectedCalvingDate(b.aiDate);
+      if (calving) details.push(`Expected Calving: ${calving}`);
+    } else if (b.heatDate) {
+      const nextHeat = nextHeatDate(b.heatDate);
+      if (nextHeat) details.push(`Next Heat: ${nextHeat}`);
+    }
+    return `<li>${details.join(' · ')}</li>`;
+  }).join('')}</ul>`;
+}
+
+function renderCowHealthList(healthList = []) {
+  if (!healthList.length) return '<p class="emptyText">No health records yet.</p>';
+  return `<ul class="recordList">${healthList.map((h) => {
+    const details = [];
+    if (h.type) details.push(`<strong>${h.type}</strong>`);
+    if (h.date) details.push(`Date: ${h.date}`);
+    if (h.nextDue) details.push(`Next due: ${h.nextDue}`);
+    if (h.notes) details.push(`Notes: ${h.notes}`);
+    return `<li>${details.join(' · ')}</li>`;
+  }).join('')}</ul>`;
 }
 
 function profileCard(cow) {
   const photo = cow.photo ? `<img class="cowPhoto" src="${cow.photo}" alt="${cow.name}">` : '<div class="cowPhoto placeholder">🐄</div>';
-  return `<article class="profile">${photo}<div><h3>${cow.name}</h3><p>${cow.status}</p><p>${cow.breeding?.length || 0} breeding records · ${cow.health?.length || 0} health records</p></div></article>`;
+  const isOpen = openCowIds.has(cow.id);
+
+  return `<details class="profileCard" data-cow-id="${cow.id}" ${isOpen ? 'open' : ''}>
+    <summary class="profileSummary">
+      ${photo}
+      <div class="summaryContent">
+        <h3>${cow.name}</h3>
+        <span class="statusBadge">${cow.status}</span>
+        <p><small>${cow.breeding?.length || 0} breeding records · ${cow.health?.length || 0} health records</small></p>
+      </div>
+      <span class="expandIcon">▼</span>
+    </summary>
+    <div class="profileDetails">
+      <div class="sectionBox">
+        <h4>📅 Breeding Records</h4>
+        <form data-cow="${cow.id}" class="breedForm inlineForm">
+          <div class="formRow">
+            <label>Heat date <input name="heatDate" type="date"></label>
+            <label>AI date <input name="aiDate" type="date"></label>
+            <label>Pregnancy status
+              <select name="pregnancyStatus">
+                <option>Open</option>
+                <option>Pregnant</option>
+                <option>Unknown</option>
+              </select>
+            </label>
+          </div>
+          <button type="submit">Add Breeding Record</button>
+        </form>
+        <div class="recordsContainer">
+          ${renderCowBreedingList(cow.breeding)}
+        </div>
+      </div>
+
+      <div class="sectionBox">
+        <h4>💉 Health Records</h4>
+        <form data-cow="${cow.id}" class="healthForm inlineForm">
+          <div class="formRow">
+            <label>Type
+              <select name="type">
+                <option>Vaccination</option>
+                <option>Illness</option>
+                <option>Treatment</option>
+              </select>
+            </label>
+            <label>Date <input name="date" type="date" value="${today()}"></label>
+            <label>Next due <input name="nextDue" type="date"></label>
+          </div>
+          <label>Notes <input name="notes" placeholder="Notes / details"></label>
+          <button type="submit">Add Health Record</button>
+        </form>
+        <div class="recordsContainer">
+          ${renderCowHealthList(cow.health)}
+        </div>
+      </div>
+    </div>
+  </details>`;
 }
 
 function renderMilk() {
   renderShell(`<section class="card"><h2>Milk session</h2><form id="milkForm"><input name="date" type="date" value="${today()}" required><select name="session"><option>Morning</option><option>Evening</option></select><input name="quantity" type="number" step="0.1" placeholder="Litres" required><input name="fat" type="number" step="0.1" placeholder="Fat %" required><input name="snf" type="number" step="0.1" placeholder="SNF %" required><button>Add milk</button></form><label>Fat alert <input id="fatThreshold" type="number" step="0.1" value="${state.thresholds.fat}"></label><label>SNF alert <input id="snfThreshold" type="number" step="0.1" value="${state.thresholds.snf}"></label><div class="chart">${summarizeMilk(state.milk).map(bar).join('') || '<p>No milk entries yet.</p>'}</div></section>`);
-}
-
-function renderBreeding() {
-  renderShell(`<section class="card"><h2>Breeding</h2><div class="list">${state.cows.map(breedingCard).join('') || '<p>Add cows first from Cow Profiles.</p>'}</div></section>`);
-}
-
-function breedingCard(cow) {
-  return `<details><summary>${cow.name} — ${cow.status}</summary><form data-cow="${cow.id}" class="breedForm"><input name="heatDate" type="date"><input name="aiDate" type="date"><select name="pregnancyStatus"><option>Open</option><option>Pregnant</option><option>Unknown</option></select><button>Add breeding</button></form><pre>${JSON.stringify(cow.breeding || [], null, 2)}</pre></details>`;
-}
-
-function renderHealth() {
-  renderShell(`<section class="card"><h2>Health</h2><div class="list">${state.cows.map(healthCard).join('') || '<p>Add cows first from Cow Profiles.</p>'}</div></section>`);
-}
-
-function healthCard(cow) {
-  return `<details><summary>${cow.name} — ${cow.status}</summary><form data-cow="${cow.id}" class="healthForm"><select name="type"><option>Vaccination</option><option>Illness</option><option>Treatment</option></select><input name="date" type="date" value="${today()}"><input name="nextDue" type="date"><input name="notes" placeholder="Notes"><button>Add health</button></form><pre>${JSON.stringify(cow.health || [], null, 2)}</pre></details>`;
 }
 
 function renderAlerts() {
@@ -127,11 +225,56 @@ function readCowPhoto(input) {
 }
 function bindSharedEvents() {
   document.querySelectorAll('.featureCard').forEach((card) => card.onclick = () => navigate(card.dataset.route));
-  document.querySelector('#loginBtn')?.addEventListener('click', login); 
-  document.querySelector('#cowForm')?.addEventListener('submit', async (e) => { e.preventDefault(); const data = formData(e.target); const photo = await readCowPhoto(e.target.photoFile); delete data.photoFile; state.cows.push({ id: uid(), ...data, photo, breeding: [], health: [] }); saveState(state); render(); });
+  document.querySelector('#loginBtn')?.addEventListener('click', login);
+  document.querySelector('#toggleAddCowBtn')?.addEventListener('click', () => {
+    showAddCowForm = !showAddCowForm;
+    render();
+  });
+  document.querySelector('#cowForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const data = formData(e.target);
+    const photo = await readCowPhoto(e.target.photoFile);
+    delete data.photoFile;
+    const newCowId = uid();
+    state.cows.push({ id: newCowId, ...data, photo, breeding: [], health: [] });
+    openCowIds.add(newCowId);
+    showAddCowForm = false;
+    saveState(state);
+    render();
+  });
+  document.querySelectorAll('.profileCard').forEach((card) => {
+    card.ontoggle = () => {
+      const cowId = card.dataset.cowId;
+      if (card.open) {
+        openCowIds.add(cowId);
+      } else {
+        openCowIds.delete(cowId);
+      }
+    };
+  });
   document.querySelector('#milkForm')?.addEventListener('submit', (e) => { e.preventDefault(); state.milk.push({ id: uid(), ...formData(e.target) }); saveState(state); render(); });
-  document.querySelectorAll('.breedForm').forEach((form) => form.onsubmit = (e) => { e.preventDefault(); state.cows.find((c) => c.id === form.dataset.cow).breeding.push(formData(form)); saveState(state); render(); });
-  document.querySelectorAll('.healthForm').forEach((form) => form.onsubmit = (e) => { e.preventDefault(); state.cows.find((c) => c.id === form.dataset.cow).health.push(formData(form)); saveState(state); render(); });
+  document.querySelectorAll('.breedForm').forEach((form) => form.onsubmit = (e) => {
+    e.preventDefault();
+    const cow = state.cows.find((c) => c.id === form.dataset.cow);
+    if (cow) {
+      if (!cow.breeding) cow.breeding = [];
+      cow.breeding.push(formData(form));
+      openCowIds.add(cow.id);
+      saveState(state);
+      render();
+    }
+  });
+  document.querySelectorAll('.healthForm').forEach((form) => form.onsubmit = (e) => {
+    e.preventDefault();
+    const cow = state.cows.find((c) => c.id === form.dataset.cow);
+    if (cow) {
+      if (!cow.health) cow.health = [];
+      cow.health.push(formData(form));
+      openCowIds.add(cow.id);
+      saveState(state);
+      render();
+    }
+  });
   document.querySelector('#fatThreshold')?.addEventListener('change', (e) => { state.thresholds.fat = e.target.value; saveState(state); render(); });
   document.querySelector('#snfThreshold')?.addEventListener('change', (e) => { state.thresholds.snf = e.target.value; saveState(state); render(); });
   document.querySelector('#csvBtn')?.addEventListener('click', exportCsv);
@@ -186,7 +329,7 @@ async function pullFromCloud() {
   render();
 }
 function exportCsv() {
-  const rows = [['type','cow','date','session','quantity','fat','snf','notes'], ...state.milk.map((m) => ['milk','',m.date,m.session,m.quantity,m.fat,m.snf,'']), ...state.cows.flatMap((c) => [...c.breeding.map((b) => ['breeding',c.name,b.aiDate || b.heatDate,'','','','',b.pregnancyStatus]), ...c.health.map((h) => ['health',c.name,h.date,'','','','',`${h.type} ${h.notes || ''}`])])];
+  const rows = [['type','cow','date','session','quantity','fat','snf','notes'], ...state.milk.map((m) => ['milk','',m.date,m.session,m.quantity,m.fat,m.snf,'']), ...state.cows.flatMap((c) => [...(c.breeding || []).map((b) => ['breeding',c.name,b.aiDate || b.heatDate,'','','','',b.pregnancyStatus]), ...(c.health || []).map((h) => ['health',c.name,h.date,'','','','',`${h.type} ${h.notes || ''}`])])];
   const blob = new Blob([rows.map((r) => r.join(',')).join('\n')], { type: 'text/csv' });
   const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: 'dairy-herd-export.csv' });
   link.click();
