@@ -251,7 +251,6 @@ function readCowPhoto(input) {
     reader.readAsDataURL(file);
   });
 }
-
 function bindSharedEvents() {
   document.querySelectorAll('.featureCard').forEach((card) => card.onclick = () => navigate(card.dataset.route));
   document.querySelector('#loginBtn')?.addEventListener('click', login);
@@ -352,12 +351,38 @@ async function login() {
   render();
 }
 
-function syncNow() {
-  state.sync = { pending: false, lastSyncedAt: new Date().toISOString() };
+async function syncNow() {
+  if (!state.user?.uid || !isFirebaseConfigured()) {
+    state.sync = { ...state.sync, pending: false, lastSyncedAt: new Date().toISOString(), status: 'Local sync only — Firebase not connected' };
+    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+    render();
+    return;
+  }
+  state.sync.status = 'Syncing with Firebase...';
+  render();
+  state = await syncUserState(state.user.uid, state);
+  state.sync = { ...state.sync, pending: false, lastSyncedAt: new Date().toISOString(), status: 'Synced with Firebase' };
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
   render();
 }
 
+async function pullFromCloud() {
+  const remote = await pullUserState(state.user.uid);
+  if (remote) {
+    state = {
+      ...state,
+      cows: remote.cows || [],
+      milk: remote.milk || [],
+      thresholds: remote.thresholds || state.thresholds,
+      sync: { pending: false, localUpdatedAt: remote.localUpdatedAt || Date.now(), lastSyncedAt: new Date().toISOString(), status: 'Loaded Firebase backup' },
+    };
+  } else {
+    await pushUserState(state.user.uid, state);
+    state.sync = { ...state.sync, pending: false, lastSyncedAt: new Date().toISOString(), status: 'Created Firebase backup' };
+  }
+  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  render();
+}
 function exportCsv() {
   const rows = [['type','cow','date','session','quantity','fat','snf','notes'], ...state.milk.map((m) => ['milk','',m.date,m.session,m.quantity,m.fat,m.snf,'']), ...state.cows.flatMap((c) => [...(c.breeding || []).map((b) => ['breeding',c.name,b.aiDate || b.heatDate,'','','','',b.pregnancyStatus]), ...(c.health || []).map((h) => ['health',c.name,h.date,'','','','',`${h.type} ${h.notes || ''}`])])];
   const blob = new Blob([rows.map((r) => r.join(',')).join('\n')], { type: 'text/csv' });
@@ -368,8 +393,7 @@ function exportCsv() {
 onFirebaseAuthChange(async (user) => {
   if (!user) return;
   state.user = { uid: user.uid, email: user.email };
-  state = await syncUserState(user.uid, state);
-  render();
+  await pullFromCloud();
 });
 window.addEventListener('hashchange', render);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
