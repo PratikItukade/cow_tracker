@@ -274,7 +274,8 @@ function exportCsv() {
 onFirebaseAuthChange(async (user) => {
   if (!user) return;
   state.user = { uid: user.uid, email: user.email };
-  await pullFromCloud();
+  state = await syncUserState(user.uid, state);
+  render();
 });
 window.addEventListener('hashchange', render);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
