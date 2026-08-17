@@ -4,6 +4,7 @@ import { isFirebaseConfigured, loginOrCreateUser, onFirebaseAuthChange, pullUser
 const STORE_KEY = 'cow-tracker-state-v1';
 const routes = ['home', 'cows', 'milk', 'alerts', 'export'];
 let showAddCowForm = false;
+let showAuthModal = false;
 const openCowIds = new Set();
 
 function loadState() {
@@ -34,11 +35,23 @@ function navigate(nextRoute) {
 
 function renderShell(content) {
   const title = route === 'home' ? 'Dairy Herd Manager' : pageTitle(route);
+  const accountLabel = state.user?.email ? '👤 Account' : '👤 Login';
   app.innerHTML = `
-    <header><div><p class="eyebrow">Offline-first PWA</p><h1>${title}</h1></div><button id="syncBtn">${navigator.onLine ? 'Sync now' : 'Offline'}</button></header>
-    ${route === 'home' ? authSection() : '<button class="backBtn" id="homeBtn">← Home</button>'}
+    <header>
+      <div><p class="eyebrow">Offline-first PWA</p><h1>${title}</h1></div>
+      <div class="headerActions">
+        <button id="accountBtn" class="btnSecondary">${accountLabel}</button>
+        <button id="syncBtn">${navigator.onLine ? 'Sync now' : 'Offline'}</button>
+      </div>
+    </header>
+    ${showAuthModal ? authModal() : ''}
+    ${route === 'home' ? '' : '<button class="backBtn" id="homeBtn">← Home</button>'}
     ${content}`;
   document.querySelector('#syncBtn').onclick = syncNow;
+  document.querySelector('#accountBtn').onclick = () => {
+    showAuthModal = !showAuthModal;
+    render();
+  };
   if (route !== 'home') document.querySelector('#homeBtn').onclick = () => navigate('home');
 }
 
@@ -53,8 +66,21 @@ function pageTitle(value) {
   return ({ cows: 'Cow Profiles', milk: 'Milk Session', alerts: 'Alerts & Reminders', export: 'Export' })[value];
 }
 
-function authSection() {
-  return `<section class="auth card"><h2>Single-user login</h2><input id="email" type="email" placeholder="Email" value="${state.user?.email || ''}"><input id="password" type="password" placeholder="Password"><button id="loginBtn">Save login</button><p>${authStatusText()}</p></section>`;
+function authModal() {
+  return `<div class="modalOverlay" id="authOverlay">
+    <div class="authModal card">
+      <div class="modalHeader">
+        <h2>Single-user login</h2>
+        <button id="closeAuthBtn" class="btnClose">✕</button>
+      </div>
+      <form id="loginForm" onsubmit="return false;">
+        <input id="email" type="email" placeholder="Email" value="${state.user?.email || ''}">
+        <input id="password" type="password" placeholder="Password">
+        <button id="loginBtn" type="button">Save login</button>
+      </form>
+      <p class="authStatusP">${authStatusText()}</p>
+    </div>
+  </div>`;
 }
 
 function authStatusText() {
@@ -68,8 +94,6 @@ function renderHome() {
   renderShell(`<section class="homeGrid">
     ${homeCard('cows', '🐄', 'Cow Profiles', `${state.cows.length} cows / heifers`)}
     ${homeCard('milk', '🥛', 'Milk Session', `${state.milk.length} session entries`)}
-    ${homeCard('cows', '📅', 'Breeding', 'Heat, AI and pregnancy records')}
-    ${homeCard('cows', '💉', 'Health', 'Vaccination and treatment logs')}
     ${homeCard('alerts', '🔔', 'Alerts & Reminders', `${alerts.length} active reminders`)}
     ${homeCard('export', '📤', 'Export', 'CSV and print/PDF reports')}
   </section>`);
@@ -226,6 +250,16 @@ function readCowPhoto(input) {
 function bindSharedEvents() {
   document.querySelectorAll('.featureCard').forEach((card) => card.onclick = () => navigate(card.dataset.route));
   document.querySelector('#loginBtn')?.addEventListener('click', login);
+  document.querySelector('#closeAuthBtn')?.addEventListener('click', () => {
+    showAuthModal = false;
+    render();
+  });
+  document.querySelector('#authOverlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'authOverlay') {
+      showAuthModal = false;
+      render();
+    }
+  });
   document.querySelector('#toggleAddCowBtn')?.addEventListener('click', () => {
     showAddCowForm = !showAddCowForm;
     render();
@@ -286,6 +320,7 @@ async function login() {
   if (!isFirebaseConfigured()) {
     state.user = { email };
     saveState(state);
+    showAuthModal = false;
     render();
     return;
   }
@@ -294,6 +329,8 @@ async function login() {
   const credential = await loginOrCreateUser(email, password);
   state.user = { uid: credential.user.uid, email: credential.user.email };
   await pullFromCloud();
+  showAuthModal = false;
+  render();
 }
 
 async function syncNow() {
