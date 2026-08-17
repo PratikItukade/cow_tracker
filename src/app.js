@@ -11,6 +11,8 @@ function loadState() {
 
 function saveState(state) {
   state.sync.pending = true;
+  state.sync.localUpdatedAt = Date.now();
+  state.sync.status = state.user?.uid && isFirebaseConfigured() ? 'Pending cloud sync' : 'Saved locally';
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
 }
 
@@ -52,7 +54,13 @@ function pageTitle(value) {
 }
 
 function authSection() {
-  return `<section class="auth card"><h2>Single-user login</h2><input id="email" type="email" placeholder="Email" value="${state.user?.email || ''}"><input id="password" type="password" placeholder="Password"><button id="loginBtn">Save login</button><p>${state.user ? `Backup account: ${state.user.email}` : 'Login enables cloud backup when sync is connected.'}</p></section>`;
+  return `<section class="auth card"><h2>Single-user login</h2><input id="email" type="email" placeholder="Email" value="${state.user?.email || ''}"><input id="password" type="password" placeholder="Password"><button id="loginBtn">Save login</button><p>${authStatusText()}</p></section>`;
+}
+
+function authStatusText() {
+  if (!isFirebaseConfigured()) return 'Firebase config missing — saved locally until src/firebase-config.js is updated.';
+  if (state.user?.email) return `Backup account: ${state.user.email} · ${state.sync?.status || 'Cloud sync ready'}`;
+  return 'Login enables Firebase cloud backup and cross-device sync.';
 }
 
 function renderHome() {
@@ -262,6 +270,11 @@ function exportCsv() {
   link.click();
 }
 
+onFirebaseAuthChange(async (user) => {
+  if (!user) return;
+  state.user = { uid: user.uid, email: user.email };
+  await pullFromCloud();
+});
 window.addEventListener('hashchange', render);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
 render();
