@@ -1,10 +1,11 @@
-import { expectedCalvingDate, getAlerts, initialState, nextHeatDate, summarizeMilk, today } from './domain.js';
-import { isFirebaseConfigured, onFirebaseAuthChange, syncUserState } from './firebase-service.js';
+import { getAlerts, initialState, summarizeMilk, today, expectedCalvingDate, nextHeatDate } from './domain.js';
+import { isFirebaseConfigured, loginOrCreateUser, onFirebaseAuthChange, pullUserState, pushUserState, syncUserState } from './firebase-service.js';
+
 const STORE_KEY = 'cow-tracker-state-v1';
 const routes = ['home', 'cows', 'milk', 'alerts', 'export'];
-
-let showCowForm = false;
-const expandedCowIds = new Set();
+let showAddCowForm = false;
+let showAuthModal = false;
+const openCowIds = new Set();
 
 function loadState() {
   return JSON.parse(localStorage.getItem(STORE_KEY) || 'null') || structuredClone(initialState);
@@ -34,19 +35,30 @@ function navigate(nextRoute) {
 
 function renderShell(content) {
   const title = route === 'home' ? 'Dairy Herd Manager' : pageTitle(route);
+  const accountLabel = state.user?.email ? '👤 Account' : '👤 Login';
   app.innerHTML = `
-    <header><div><p class="eyebrow">Offline-first PWA</p><h1>${title}</h1></div><button id="syncBtn">${navigator.onLine ? 'Sync now' : 'Offline'}</button></header>
-    ${route === 'home' ? authSection() : '<button class="backBtn" id="homeBtn">← Home</button>'}
+    <header>
+      <div><p class="eyebrow">Offline-first PWA</p><h1>${title}</h1></div>
+      <div class="headerActions">
+        <button id="accountBtn" class="btnSecondary">${accountLabel}</button>
+        <button id="syncBtn">${navigator.onLine ? 'Sync now' : 'Offline'}</button>
+      </div>
+    </header>
+    ${showAuthModal ? authModal() : ''}
+    ${route === 'home' ? '' : '<button class="backBtn" id="homeBtn">← Home</button>'}
     ${content}`;
   document.querySelector('#syncBtn').onclick = syncNow;
+  document.querySelector('#accountBtn').onclick = () => {
+    showAuthModal = !showAuthModal;
+    render();
+  };
   if (route !== 'home') document.querySelector('#homeBtn').onclick = () => navigate('home');
 }
 
 function render() {
   route = getRoute();
   const pages = { home: renderHome, cows: renderCows, milk: renderMilk, alerts: renderAlerts, export: renderExport };
-  const pageRender = pages[route] || renderHome;
-  pageRender();
+  pages[route]();
   bindSharedEvents();
 }
 
@@ -54,8 +66,21 @@ function pageTitle(value) {
   return ({ cows: 'Cow Profiles', milk: 'Milk Session', alerts: 'Alerts & Reminders', export: 'Export' })[value];
 }
 
-function authSection() {
-  return `<section class="auth card"><h2>Single-user login</h2><input id="email" type="email" placeholder="Email" value="${state.user?.email || ''}"><input id="password" type="password" placeholder="Password"><button id="loginBtn">Save login</button><p>${authStatusText()}</p></section>`;
+function authModal() {
+  return `<div class="modalOverlay" id="authOverlay">
+    <div class="authModal card">
+      <div class="modalHeader">
+        <h2>Single-user login</h2>
+        <button id="closeAuthBtn" class="btnClose">✕</button>
+      </div>
+      <form id="loginForm" onsubmit="return false;">
+        <input id="email" type="email" placeholder="Email" value="${state.user?.email || ''}">
+        <input id="password" type="password" placeholder="Password">
+        <button id="loginBtn" type="button">Save login</button>
+      </form>
+      <p class="authStatusP">${authStatusText()}</p>
+    </div>
+  </div>`;
 }
 
 function authStatusText() {
@@ -69,8 +94,6 @@ function renderHome() {
   renderShell(`<section class="homeGrid">
     ${homeCard('cows', '🐄', 'Cow Profiles', `${state.cows.length} cows / heifers`)}
     ${homeCard('milk', '🥛', 'Milk Session', `${state.milk.length} session entries`)}
-    ${homeCard('cows', '📅', 'Breeding', 'Managed in Cow Profiles')}
-    ${homeCard('cows', '💉', 'Health', 'Managed in Cow Profiles')}
     ${homeCard('alerts', '🔔', 'Alerts & Reminders', `${alerts.length} active reminders`)}
     ${homeCard('export', '📤', 'Export', 'CSV and print/PDF reports')}
   </section>`);
@@ -81,63 +104,84 @@ function homeCard(routeName, icon, title, summary) {
 }
 
 function renderCows() {
+  const toggleBtnText = showAddCowForm ? '✕ Close' : '+ Add Cow';
+  const addFormClass = showAddCowForm ? 'addCowSection open' : 'addCowSection hidden';
+
   renderShell(`<section class="card">
-    <div class="cardHeader">
+    <div class="cowsHeader">
       <h2>Cow profiles</h2>
-      <button id="toggleCowFormBtn" class="addCowBtn">${showCowForm ? '✕ Close' : '+ Add Cow'}</button>
+      <button id="toggleAddCowBtn" class="btnSecondary">${toggleBtnText}</button>
     </div>
-    ${showCowForm ? `
-      <form id="cowForm" class="cowForm">
-        <input name="name" placeholder="Tag / name" required>
-        <input name="photoFile" type="file" accept="image/*" capture="environment">
-        <select name="status">
-          <option>In milk</option>
-          <option>Heifer</option>
-          <option>Dry</option>
-        </select>
-        <button type="submit">Add cow</button>
+    <div id="addCowContainer" class="${addFormClass}">
+      <form id="cowForm" class="cowFormCard">
+        <h3>Add new cow</h3>
+        <label>Tag / Name <input name="name" placeholder="Tag / name" required></label>
+        <label>Photo <input name="photoFile" type="file" accept="image/*" capture="environment"></label>
+        <label>Status
+          <select name="status">
+            <option>In milk</option>
+            <option>Heifer</option>
+            <option>Dry</option>
+          </select>
+        </label>
+        <button type="submit">Save Cow</button>
       </form>
-    ` : ''}
+    </div>
     <div class="list">${state.cows.map(profileCard).join('') || '<p>No cows added yet.</p>'}</div>
   </section>`);
 }
 
-function profileCard(cow) {
-  const photo = cow.photo ? `<img class="cowPhoto" src="${cow.photo}" alt="${cow.name}">` : '<div class="cowPhoto placeholder">🐄</div>';
-  const isOpen = expandedCowIds.has(cow.id);
-
-  const breedingRecords = (cow.breeding || []).map((b) => {
+function renderCowBreedingList(breedingList = []) {
+  if (!breedingList.length) return '<p class="emptyText">No breeding records yet.</p>';
+  return `<ul class="recordList">${breedingList.map((b) => {
     const details = [];
-    if (b.heatDate) details.push(`Heat: ${b.heatDate}${nextHeatDate(b.heatDate) ? ` (Next: ${nextHeatDate(b.heatDate)})` : ''}`);
-    if (b.aiDate) details.push(`AI: ${b.aiDate}${expectedCalvingDate(b.aiDate) ? ` (Calving: ${expectedCalvingDate(b.aiDate)})` : ''}`);
+    if (b.heatDate) details.push(`Heat: ${b.heatDate}`);
+    if (b.aiDate) details.push(`AI: ${b.aiDate}`);
     if (b.pregnancyStatus) details.push(`Status: ${b.pregnancyStatus}`);
-    return `<div class="recordItem"><strong>${b.pregnancyStatus || 'Breeding Record'}</strong><p>${details.join(' · ')}</p></div>`;
-  }).join('') || '<p class="emptyText">No breeding records yet.</p>';
+    if (b.aiDate && b.pregnancyStatus === 'Pregnant') {
+      const calving = expectedCalvingDate(b.aiDate);
+      if (calving) details.push(`Expected Calving: ${calving}`);
+    } else if (b.heatDate) {
+      const nextHeat = nextHeatDate(b.heatDate);
+      if (nextHeat) details.push(`Next Heat: ${nextHeat}`);
+    }
+    return `<li>${details.join(' · ')}</li>`;
+  }).join('')}</ul>`;
+}
 
-  const healthRecords = (cow.health || []).map((h) => {
+function renderCowHealthList(healthList = []) {
+  if (!healthList.length) return '<p class="emptyText">No health records yet.</p>';
+  return `<ul class="recordList">${healthList.map((h) => {
     const details = [];
+    if (h.type) details.push(`<strong>${h.type}</strong>`);
     if (h.date) details.push(`Date: ${h.date}`);
     if (h.nextDue) details.push(`Next due: ${h.nextDue}`);
     if (h.notes) details.push(`Notes: ${h.notes}`);
-    return `<div class="recordItem"><strong>${h.type || 'Health Record'}</strong><p>${details.join(' · ')}</p></div>`;
-  }).join('') || '<p class="emptyText">No health records yet.</p>';
+    return `<li>${details.join(' · ')}</li>`;
+  }).join('')}</ul>`;
+}
 
-  return `<details class="profileCard" data-id="${cow.id}" ${isOpen ? 'open' : ''}>
+function profileCard(cow) {
+  const photo = cow.photo ? `<img class="cowPhoto" src="${cow.photo}" alt="${cow.name}">` : '<div class="cowPhoto placeholder">🐄</div>';
+  const isOpen = openCowIds.has(cow.id);
+
+  return `<details class="profileCard" data-cow-id="${cow.id}" ${isOpen ? 'open' : ''}>
     <summary class="profileSummary">
       ${photo}
-      <div class="profileInfo">
+      <div class="summaryContent">
         <h3>${cow.name}</h3>
-        <p class="statusBadge">${cow.status}</p>
-        <p class="summaryText">${cow.breeding?.length || 0} breeding records · ${cow.health?.length || 0} health records</p>
+        <span class="statusBadge">${cow.status}</span>
+        <p><small>${cow.breeding?.length || 0} breeding records · ${cow.health?.length || 0} health records</small></p>
       </div>
+      <span class="expandIcon">▼</span>
     </summary>
     <div class="profileDetails">
-      <div class="cowSection">
-        <h4>📅 Breeding</h4>
-        <form data-cow="${cow.id}" class="breedForm">
+      <div class="sectionBox">
+        <h4>📅 Breeding Records</h4>
+        <form data-cow="${cow.id}" class="breedForm inlineForm">
           <div class="formRow">
-            <label>Heat date<input name="heatDate" type="date"></label>
-            <label>AI date<input name="aiDate" type="date"></label>
+            <label>Heat date <input name="heatDate" type="date"></label>
+            <label>AI date <input name="aiDate" type="date"></label>
             <label>Pregnancy status
               <select name="pregnancyStatus">
                 <option>Open</option>
@@ -146,14 +190,16 @@ function profileCard(cow) {
               </select>
             </label>
           </div>
-          <button type="submit">Add breeding</button>
+          <button type="submit">Add Breeding Record</button>
         </form>
-        <div class="recordsList">${breedingRecords}</div>
+        <div class="recordsContainer">
+          ${renderCowBreedingList(cow.breeding)}
+        </div>
       </div>
 
-      <div class="cowSection">
-        <h4>💉 Health</h4>
-        <form data-cow="${cow.id}" class="healthForm">
+      <div class="sectionBox">
+        <h4>💉 Health Records</h4>
+        <form data-cow="${cow.id}" class="healthForm inlineForm">
           <div class="formRow">
             <label>Type
               <select name="type">
@@ -162,13 +208,19 @@ function profileCard(cow) {
                 <option>Treatment</option>
               </select>
             </label>
-            <label>Date<input name="date" type="date" value="${today()}"></label>
-            <label>Next due<input name="nextDue" type="date"></label>
-            <label>Notes<input name="notes" placeholder="Notes"></label>
+            <label>Date <input name="date" type="date" value="${today()}"></label>
+            <label>Next due <input name="nextDue" type="date"></label>
           </div>
-          <button type="submit">Add health</button>
+          <label>Notes <input name="notes" placeholder="Notes / details"></label>
+          <button type="submit">Add Health Record</button>
         </form>
-        <div class="recordsList">${healthRecords}</div>
+        <div class="recordsContainer">
+          ${renderCowHealthList(cow.health)}
+        </div>
+      </div>
+
+      <div class="cardFooter">
+        <button class="deleteCowBtn" data-cow-id="${cow.id}" data-cow-name="${cow.name}">🗑 Delete ${cow.name}</button>
       </div>
     </div>
   </details>`;
@@ -202,35 +254,57 @@ function readCowPhoto(input) {
 
 function bindSharedEvents() {
   document.querySelectorAll('.featureCard').forEach((card) => card.onclick = () => navigate(card.dataset.route));
-  document.querySelector('#loginBtn')?.addEventListener('click', () => { state.user = { email: document.querySelector('#email').value }; saveState(state); render(); });
-
-  document.querySelector('#toggleCowFormBtn')?.addEventListener('click', () => {
-    showCowForm = !showCowForm;
+  document.querySelector('#loginBtn')?.addEventListener('click', login);
+  document.querySelector('#closeAuthBtn')?.addEventListener('click', () => {
+    showAuthModal = false;
     render();
   });
-
+  document.querySelector('#authOverlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'authOverlay') {
+      showAuthModal = false;
+      render();
+    }
+  });
+  document.querySelector('#toggleAddCowBtn')?.addEventListener('click', () => {
+    showAddCowForm = !showAddCowForm;
+    render();
+  });
   document.querySelector('#cowForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const data = formData(e.target);
     const photo = await readCowPhoto(e.target.photoFile);
     delete data.photoFile;
-    state.cows.push({ id: uid(), ...data, photo, breeding: [], health: [] });
-    showCowForm = false;
+    const newCowId = uid();
+    state.cows.push({ id: newCowId, ...data, photo, breeding: [], health: [] });
+    openCowIds.add(newCowId);
+    showAddCowForm = false;
     saveState(state);
     render();
   });
-
-  document.querySelectorAll('details.profileCard').forEach((el) => {
-    el.addEventListener('toggle', () => {
-      const cowId = el.dataset.id;
-      if (el.open) {
-        expandedCowIds.add(cowId);
+  document.querySelectorAll('.profileCard').forEach((card) => {
+    card.ontoggle = () => {
+      const cowId = card.dataset.cowId;
+      if (card.open) {
+        openCowIds.add(cowId);
       } else {
-        expandedCowIds.delete(cowId);
+        openCowIds.delete(cowId);
       }
-    });
+    };
   });
-
+  document.querySelectorAll('.deleteCowBtn').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const cowId = btn.dataset.cowId;
+      const cowName = btn.dataset.cowName;
+      if (window.confirm(`Are you sure you want to delete ${cowName}?`)) {
+        state.cows = state.cows.filter((c) => c.id !== cowId);
+        openCowIds.delete(cowId);
+        saveState(state);
+        render();
+      }
+    };
+  });
   document.querySelector('#milkForm')?.addEventListener('submit', (e) => { e.preventDefault(); state.milk.push({ id: uid(), ...formData(e.target) }); saveState(state); render(); });
   document.querySelectorAll('.breedForm').forEach((form) => form.onsubmit = (e) => {
     e.preventDefault();
@@ -238,6 +312,7 @@ function bindSharedEvents() {
     if (cow) {
       if (!cow.breeding) cow.breeding = [];
       cow.breeding.push(formData(form));
+      openCowIds.add(cow.id);
       saveState(state);
       render();
     }
@@ -248,6 +323,7 @@ function bindSharedEvents() {
     if (cow) {
       if (!cow.health) cow.health = [];
       cow.health.push(formData(form));
+      openCowIds.add(cow.id);
       saveState(state);
       render();
     }
@@ -256,6 +332,24 @@ function bindSharedEvents() {
   document.querySelector('#snfThreshold')?.addEventListener('change', (e) => { state.thresholds.snf = e.target.value; saveState(state); render(); });
   document.querySelector('#csvBtn')?.addEventListener('click', exportCsv);
   document.querySelector('#pdfBtn')?.addEventListener('click', () => print());
+}
+async function login() {
+  const email = document.querySelector('#email').value;
+  const password = document.querySelector('#password').value;
+  if (!isFirebaseConfigured()) {
+    state.user = { email };
+    saveState(state);
+    showAuthModal = false;
+    render();
+    return;
+  }
+  state.sync.status = 'Signing in...';
+  render();
+  const credential = await loginOrCreateUser(email, password);
+  state.user = { uid: credential.user.uid, email: credential.user.email };
+  await pullFromCloud();
+  showAuthModal = false;
+  render();
 }
 
 function syncNow() {
