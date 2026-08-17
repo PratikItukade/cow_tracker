@@ -1,5 +1,5 @@
 import { expectedCalvingDate, getAlerts, initialState, nextHeatDate, summarizeMilk, today } from './domain.js';
-import { isFirebaseConfigured, onFirebaseAuthChange, pullFromCloud } from './firebase-service.js';
+import { isFirebaseConfigured, onFirebaseAuthChange, syncUserState } from './firebase-service.js';
 const STORE_KEY = 'cow-tracker-state-v1';
 const routes = ['home', 'cows', 'milk', 'alerts', 'export'];
 
