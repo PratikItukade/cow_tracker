@@ -4,6 +4,8 @@ import { isFirebaseConfigured, loginOrCreateUser, onFirebaseAuthChange, pullUser
 const STORE_KEY = 'cow-tracker-state-v1';
 const routes = ['home', 'cows', 'milk', 'alerts', 'export'];
 let showAddCowForm = false;
+let showAddMilkForm = false;
+let showAuthModal = false;
 const openCowIds = new Set();
 
 function loadState() {
@@ -34,11 +36,23 @@ function navigate(nextRoute) {
 
 function renderShell(content) {
   const title = route === 'home' ? 'Dairy Herd Manager' : pageTitle(route);
+  const accountLabel = state.user?.email ? '👤 Account' : '👤 Login';
   app.innerHTML = `
-    <header><div><p class="eyebrow">Offline-first PWA</p><h1>${title}</h1></div><button id="syncBtn">${navigator.onLine ? 'Sync now' : 'Offline'}</button></header>
-    ${route === 'home' ? authSection() : '<button class="backBtn" id="homeBtn">← Home</button>'}
+    <header>
+      <div><p class="eyebrow">Offline-first PWA</p><h1>${title}</h1></div>
+      <div class="headerActions">
+        <button id="accountBtn" class="btnSecondary">${accountLabel}</button>
+        <button id="syncBtn">${navigator.onLine ? 'Sync now' : 'Offline'}</button>
+      </div>
+    </header>
+    ${showAuthModal ? authModal() : ''}
+    ${route === 'home' ? '' : '<button class="backBtn" id="homeBtn">← Home</button>'}
     ${content}`;
   document.querySelector('#syncBtn').onclick = syncNow;
+  document.querySelector('#accountBtn').onclick = () => {
+    showAuthModal = !showAuthModal;
+    render();
+  };
   if (route !== 'home') document.querySelector('#homeBtn').onclick = () => navigate('home');
 }
 
@@ -53,8 +67,21 @@ function pageTitle(value) {
   return ({ cows: 'Cow Profiles', milk: 'Milk Session', alerts: 'Alerts & Reminders', export: 'Export' })[value];
 }
 
-function authSection() {
-  return `<section class="auth card"><h2>Single-user login</h2><input id="email" type="email" placeholder="Email" value="${state.user?.email || ''}"><input id="password" type="password" placeholder="Password"><button id="loginBtn">Save login</button><p>${authStatusText()}</p></section>`;
+function authModal() {
+  return `<div class="modalOverlay" id="authOverlay">
+    <div class="authModal card">
+      <div class="modalHeader">
+        <h2>Single-user login</h2>
+        <button id="closeAuthBtn" class="btnClose">✕</button>
+      </div>
+      <form id="loginForm" onsubmit="return false;">
+        <input id="email" type="email" placeholder="Email" value="${state.user?.email || ''}">
+        <input id="password" type="password" placeholder="Password">
+        <button id="loginBtn" type="button">Save login</button>
+      </form>
+      <p class="authStatusP">${authStatusText()}</p>
+    </div>
+  </div>`;
 }
 
 function authStatusText() {
@@ -68,8 +95,6 @@ function renderHome() {
   renderShell(`<section class="homeGrid">
     ${homeCard('cows', '🐄', 'Cow Profiles', `${state.cows.length} cows / heifers`)}
     ${homeCard('milk', '🥛', 'Milk Session', `${state.milk.length} session entries`)}
-    ${homeCard('cows', '📅', 'Breeding', 'Heat, AI and pregnancy records')}
-    ${homeCard('cows', '💉', 'Health', 'Vaccination and treatment logs')}
     ${homeCard('alerts', '🔔', 'Alerts & Reminders', `${alerts.length} active reminders`)}
     ${homeCard('export', '📤', 'Export', 'CSV and print/PDF reports')}
   </section>`);
@@ -194,12 +219,94 @@ function profileCard(cow) {
           ${renderCowHealthList(cow.health)}
         </div>
       </div>
+
+      <div class="cardFooter">
+        <button class="deleteCowBtn" data-cow-id="${cow.id}" data-cow-name="${cow.name}">🗑 Delete ${cow.name}</button>
+      </div>
     </div>
   </details>`;
 }
 
 function renderMilk() {
-  renderShell(`<section class="card"><h2>Milk session</h2><form id="milkForm"><input name="date" type="date" value="${today()}" required><select name="session"><option>Morning</option><option>Evening</option></select><input name="quantity" type="number" step="0.1" placeholder="Litres" required><input name="fat" type="number" step="0.1" placeholder="Fat %" required><input name="snf" type="number" step="0.1" placeholder="SNF %" required><button>Add milk</button></form><label>Fat alert <input id="fatThreshold" type="number" step="0.1" value="${state.thresholds.fat}"></label><label>SNF alert <input id="snfThreshold" type="number" step="0.1" value="${state.thresholds.snf}"></label><div class="chart">${summarizeMilk(state.milk).map(bar).join('') || '<p>No milk entries yet.</p>'}</div></section>`);
+  const toggleBtnText = showAddMilkForm ? '✕ Close' : '+ Add Milk Entry';
+  const addFormClass = showAddMilkForm ? 'addCowSection open' : 'addCowSection hidden';
+  const sortedMilk = [...state.milk].reverse();
+
+  renderShell(`<section class="card">
+    <div class="cowsHeader">
+      <h2>Milk session</h2>
+      <button id="toggleAddMilkBtn" class="btnSecondary">${toggleBtnText}</button>
+    </div>
+
+    <div id="addMilkContainer" class="${addFormClass}">
+      <form id="milkForm" class="cowFormCard">
+        <h3>Add milk entry</h3>
+        <label>Date <input name="date" type="date" value="${today()}" required></label>
+        <label>Session
+          <select name="session">
+            <option>Morning</option>
+            <option>Evening</option>
+          </select>
+        </label>
+        <label>Litres <input name="quantity" type="number" step="0.1" placeholder="Litres" required></label>
+        <label>Fat % <input name="fat" type="number" step="0.1" placeholder="Fat %" required></label>
+        <label>SNF % <input name="snf" type="number" step="0.1" placeholder="SNF %" required></label>
+        <button type="submit">Save Milk Entry</button>
+      </form>
+    </div>
+
+    <div class="thresholdRow">
+      <label>Fat alert <input id="fatThreshold" type="number" step="0.1" value="${state.thresholds.fat}"></label>
+      <label>SNF alert <input id="snfThreshold" type="number" step="0.1" value="${state.thresholds.snf}"></label>
+    </div>
+
+    <div class="tableContainer">
+      ${renderMilkTable(sortedMilk)}
+    </div>
+
+    <div class="chart">
+      <h3>Daily Totals Chart</h3>
+      ${summarizeMilk(state.milk).map(bar).join('') || '<p>No milk entries yet.</p>'}
+    </div>
+  </section>`);
+}
+
+function renderMilkTable(entries = []) {
+  if (!entries.length) return '<p class="emptyText">No milk entries recorded yet.</p>';
+  return `<table class="milkTable">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Session</th>
+        <th>Litres</th>
+        <th>Fat %</th>
+        <th>SNF %</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${entries.map((m) => {
+        const fatLow = Number(m.fat) < Number(state.thresholds.fat);
+        const snfLow = Number(m.snf) < Number(state.thresholds.snf);
+        const alerts = [];
+        if (fatLow) alerts.push('Low Fat');
+        if (snfLow) alerts.push('Low SNF');
+        const statusHtml = alerts.length
+          ? `<span class="badgeWarning">⚠️ ${alerts.join(' & ')}</span>`
+          : `<span class="badgeOk">✓ Normal</span>`;
+        const rowClass = alerts.length ? 'rowAlert' : '';
+
+        return `<tr class="${rowClass}">
+          <td>${m.date}</td>
+          <td>${m.session}</td>
+          <td><strong>${m.quantity} L</strong></td>
+          <td class="${fatLow ? 'valueAlert' : ''}">${m.fat}%</td>
+          <td class="${snfLow ? 'valueAlert' : ''}">${m.snf}%</td>
+          <td>${statusHtml}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table>`;
 }
 
 function renderAlerts() {
@@ -226,8 +333,22 @@ function readCowPhoto(input) {
 function bindSharedEvents() {
   document.querySelectorAll('.featureCard').forEach((card) => card.onclick = () => navigate(card.dataset.route));
   document.querySelector('#loginBtn')?.addEventListener('click', login);
+  document.querySelector('#closeAuthBtn')?.addEventListener('click', () => {
+    showAuthModal = false;
+    render();
+  });
+  document.querySelector('#authOverlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'authOverlay') {
+      showAuthModal = false;
+      render();
+    }
+  });
   document.querySelector('#toggleAddCowBtn')?.addEventListener('click', () => {
     showAddCowForm = !showAddCowForm;
+    render();
+  });
+  document.querySelector('#toggleAddMilkBtn')?.addEventListener('click', () => {
+    showAddMilkForm = !showAddMilkForm;
     render();
   });
   document.querySelector('#cowForm')?.addEventListener('submit', async (e) => {
@@ -252,7 +373,27 @@ function bindSharedEvents() {
       }
     };
   });
-  document.querySelector('#milkForm')?.addEventListener('submit', (e) => { e.preventDefault(); state.milk.push({ id: uid(), ...formData(e.target) }); saveState(state); render(); });
+  document.querySelectorAll('.deleteCowBtn').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const cowId = btn.dataset.cowId;
+      const cowName = btn.dataset.cowName;
+      if (window.confirm(`Are you sure you want to delete ${cowName}?`)) {
+        state.cows = state.cows.filter((c) => c.id !== cowId);
+        openCowIds.delete(cowId);
+        saveState(state);
+        render();
+      }
+    };
+  });
+  document.querySelector('#milkForm')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    state.milk.push({ id: uid(), ...formData(e.target) });
+    showAddMilkForm = false;
+    saveState(state);
+    render();
+  });
   document.querySelectorAll('.breedForm').forEach((form) => form.onsubmit = (e) => {
     e.preventDefault();
     const cow = state.cows.find((c) => c.id === form.dataset.cow);
@@ -286,6 +427,7 @@ async function login() {
   if (!isFirebaseConfigured()) {
     state.user = { email };
     saveState(state);
+    showAuthModal = false;
     render();
     return;
   }
@@ -294,6 +436,8 @@ async function login() {
   const credential = await loginOrCreateUser(email, password);
   state.user = { uid: credential.user.uid, email: credential.user.email };
   await pullFromCloud();
+  showAuthModal = false;
+  render();
 }
 
 async function syncNow() {
