@@ -4,7 +4,10 @@ import { isFirebaseConfigured, loginOrCreateUser, onFirebaseAuthChange, pullUser
 const STORE_KEY = 'cow-tracker-state-v1';
 const routes = ['home', 'cows', 'milk', 'alerts', 'export'];
 let showAddCowForm = false;
+let showAddMilkForm = false;
 let showAuthModal = false;
+let isSigningIn = false;
+let authError = '';
 const openCowIds = new Set();
 
 function loadState() {
@@ -50,6 +53,7 @@ function renderShell(content) {
   document.querySelector('#syncBtn').onclick = syncNow;
   document.querySelector('#accountBtn').onclick = () => {
     showAuthModal = !showAuthModal;
+    authError = '';
     render();
   };
   if (route !== 'home') document.querySelector('#homeBtn').onclick = () => navigate('home');
@@ -67,17 +71,28 @@ function pageTitle(value) {
 }
 
 function authModal() {
+  const btnContent = isSigningIn
+    ? '<span class="spinner"></span> Signing in...'
+    : 'Sign in / Create account';
+
   return `<div class="modalOverlay" id="authOverlay">
     <div class="authModal card">
       <div class="modalHeader">
-        <h2>Single-user login</h2>
+        <h2>Cloud Backup Login</h2>
         <button id="closeAuthBtn" class="btnClose">✕</button>
       </div>
+      <p class="authHelperText">Sign in to back up your data to the cloud and access it from any device.</p>
       <form id="loginForm" onsubmit="return false;">
-        <input id="email" type="email" placeholder="Email" value="${state.user?.email || ''}">
-        <input id="password" type="password" placeholder="Password">
-        <button id="loginBtn" type="button">Save login</button>
+        <label>Email Address
+          <input id="email" type="email" placeholder="you@example.com" value="${state.user?.email || ''}" ${isSigningIn ? 'disabled' : ''}>
+        </label>
+        <label>Password
+          <input id="password" type="password" placeholder="Password" ${isSigningIn ? 'disabled' : ''}>
+        </label>
+        <button id="loginBtn" type="button" ${isSigningIn ? 'disabled' : ''}>${btnContent}</button>
       </form>
+      <p class="authNote"><small>💡 New here? Just enter an email and password to automatically create your account.</small></p>
+      ${authError ? `<p class="authErrorP">⚠️ ${authError}</p>` : ''}
       <p class="authStatusP">${authStatusText()}</p>
     </div>
   </div>`;
@@ -227,7 +242,85 @@ function profileCard(cow) {
 }
 
 function renderMilk() {
-  renderShell(`<section class="card"><h2>Milk session</h2><form id="milkForm"><input name="date" type="date" value="${today()}" required><select name="session"><option>Morning</option><option>Evening</option></select><input name="quantity" type="number" step="0.1" placeholder="Litres" required><input name="fat" type="number" step="0.1" placeholder="Fat %" required><input name="snf" type="number" step="0.1" placeholder="SNF %" required><button>Add milk</button></form><label>Fat alert <input id="fatThreshold" type="number" step="0.1" value="${state.thresholds.fat}"></label><label>SNF alert <input id="snfThreshold" type="number" step="0.1" value="${state.thresholds.snf}"></label><div class="chart">${summarizeMilk(state.milk).map(bar).join('') || '<p>No milk entries yet.</p>'}</div></section>`);
+  const toggleBtnText = showAddMilkForm ? '✕ Close' : '+ Add Milk Entry';
+  const addFormClass = showAddMilkForm ? 'addCowSection open' : 'addCowSection hidden';
+  const sortedMilk = [...state.milk].reverse();
+
+  renderShell(`<section class="card">
+    <div class="cowsHeader">
+      <h2>Milk session</h2>
+      <button id="toggleAddMilkBtn" class="btnSecondary">${toggleBtnText}</button>
+    </div>
+
+    <div id="addMilkContainer" class="${addFormClass}">
+      <form id="milkForm" class="cowFormCard">
+        <h3>Add milk entry</h3>
+        <label>Date <input name="date" type="date" value="${today()}" required></label>
+        <label>Session
+          <select name="session">
+            <option>Morning</option>
+            <option>Evening</option>
+          </select>
+        </label>
+        <label>Litres <input name="quantity" type="number" step="0.1" placeholder="Litres" required></label>
+        <label>Fat % <input name="fat" type="number" step="0.1" placeholder="Fat %" required></label>
+        <label>SNF % <input name="snf" type="number" step="0.1" placeholder="SNF %" required></label>
+        <button type="submit">Save Milk Entry</button>
+      </form>
+    </div>
+
+    <div class="thresholdRow">
+      <label>Fat alert <input id="fatThreshold" type="number" step="0.1" value="${state.thresholds.fat}"></label>
+      <label>SNF alert <input id="snfThreshold" type="number" step="0.1" value="${state.thresholds.snf}"></label>
+    </div>
+
+    <div class="tableContainer">
+      ${renderMilkTable(sortedMilk)}
+    </div>
+
+    <div class="chart">
+      <h3>Daily Totals Chart</h3>
+      ${summarizeMilk(state.milk).map(bar).join('') || '<p>No milk entries yet.</p>'}
+    </div>
+  </section>`);
+}
+
+function renderMilkTable(entries = []) {
+  if (!entries.length) return '<p class="emptyText">No milk entries recorded yet.</p>';
+  return `<table class="milkTable">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Session</th>
+        <th>Litres</th>
+        <th>Fat %</th>
+        <th>SNF %</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${entries.map((m) => {
+        const fatLow = Number(m.fat) < Number(state.thresholds.fat);
+        const snfLow = Number(m.snf) < Number(state.thresholds.snf);
+        const alerts = [];
+        if (fatLow) alerts.push('Low Fat');
+        if (snfLow) alerts.push('Low SNF');
+        const statusHtml = alerts.length
+          ? `<span class="badgeWarning">⚠️ ${alerts.join(' & ')}</span>`
+          : `<span class="badgeOk">✓ Normal</span>`;
+        const rowClass = alerts.length ? 'rowAlert' : '';
+
+        return `<tr class="${rowClass}">
+          <td>${m.date}</td>
+          <td>${m.session}</td>
+          <td><strong>${m.quantity} L</strong></td>
+          <td class="${fatLow ? 'valueAlert' : ''}">${m.fat}%</td>
+          <td class="${snfLow ? 'valueAlert' : ''}">${m.snf}%</td>
+          <td>${statusHtml}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table>`;
 }
 
 function renderAlerts() {
@@ -256,16 +349,22 @@ function bindSharedEvents() {
   document.querySelector('#loginBtn')?.addEventListener('click', login);
   document.querySelector('#closeAuthBtn')?.addEventListener('click', () => {
     showAuthModal = false;
+    authError = '';
     render();
   });
   document.querySelector('#authOverlay')?.addEventListener('click', (e) => {
     if (e.target.id === 'authOverlay') {
       showAuthModal = false;
+      authError = '';
       render();
     }
   });
   document.querySelector('#toggleAddCowBtn')?.addEventListener('click', () => {
     showAddCowForm = !showAddCowForm;
+    render();
+  });
+  document.querySelector('#toggleAddMilkBtn')?.addEventListener('click', () => {
+    showAddMilkForm = !showAddMilkForm;
     render();
   });
   document.querySelector('#cowForm')?.addEventListener('submit', async (e) => {
@@ -304,7 +403,13 @@ function bindSharedEvents() {
       }
     };
   });
-  document.querySelector('#milkForm')?.addEventListener('submit', (e) => { e.preventDefault(); state.milk.push({ id: uid(), ...formData(e.target) }); saveState(state); render(); });
+  document.querySelector('#milkForm')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    state.milk.push({ id: uid(), ...formData(e.target) });
+    showAddMilkForm = false;
+    saveState(state);
+    render();
+  });
   document.querySelectorAll('.breedForm').forEach((form) => form.onsubmit = (e) => {
     e.preventDefault();
     const cow = state.cows.find((c) => c.id === form.dataset.cow);
@@ -332,23 +437,42 @@ function bindSharedEvents() {
   document.querySelector('#csvBtn')?.addEventListener('click', exportCsv);
   document.querySelector('#pdfBtn')?.addEventListener('click', () => print());
 }
+
 async function login() {
-  const email = document.querySelector('#email').value;
-  const password = document.querySelector('#password').value;
-  if (!isFirebaseConfigured()) {
-    state.user = { email };
-    saveState(state);
-    showAuthModal = false;
+  if (isSigningIn) return;
+  const email = document.querySelector('#email')?.value?.trim();
+  const password = document.querySelector('#password')?.value;
+
+  if (!email) {
+    authError = 'Please enter an email address.';
     render();
     return;
   }
-  state.sync.status = 'Signing in...';
+
+  isSigningIn = true;
+  authError = '';
   render();
-  const credential = await loginOrCreateUser(email, password);
-  state.user = { uid: credential.user.uid, email: credential.user.email };
-  await pullFromCloud();
-  showAuthModal = false;
-  render();
+
+  try {
+    if (!isFirebaseConfigured()) {
+      state.user = { email };
+      saveState(state);
+      isSigningIn = false;
+      showAuthModal = false;
+      render();
+      return;
+    }
+    const credential = await loginOrCreateUser(email, password);
+    state.user = { uid: credential.user.uid, email: credential.user.email };
+    await pullFromCloud();
+    isSigningIn = false;
+    showAuthModal = false;
+    render();
+  } catch (err) {
+    isSigningIn = false;
+    authError = err?.message || 'Login failed. Please check your email and password.';
+    render();
+  }
 }
 
 async function syncNow() {
