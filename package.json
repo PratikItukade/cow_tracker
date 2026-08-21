@@ -3,5 +3,8 @@
   "scripts": {
     "start": "python3 -m http.server 5173",
     "test": "node tests/app.test.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
   }
 }

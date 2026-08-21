@@ -1,5 +1,5 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
-import { createUserWithEmailAndPassword, getAuth, onAuthStateChanged, signInWithEmailAndPassword } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js';
+import { createUserWithEmailAndPassword, getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js';
 import { doc, getDoc, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, serverTimestamp, setDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
 import { firebaseConfig, hasFirebaseConfig } from './firebase-config.js';
 
@@ -26,6 +26,13 @@ export function onFirebaseAuthChange(callback) {
   const firebase = getFirebaseClient();
   if (!firebase) return () => {};
   return onAuthStateChanged(firebase.auth, callback);
+}
+
+export async function logoutUser() {
+  const firebase = getFirebaseClient();
+  if (firebase) {
+    await signOut(firebase.auth);
+  }
 }
 
 export async function loginOrCreateUser(email, password) {
@@ -62,7 +69,15 @@ export async function syncUserState(uid, localState) {
     return deserializeState(remoteState, localState.user);
   }
   await pushUserState(uid, localState);
-  return localState;
+  return {
+    ...localState,
+    sync: {
+      pending: false,
+      localUpdatedAt: localState.sync?.localUpdatedAt || Date.now(),
+      lastSyncedAt: new Date().toISOString(),
+      status: 'Synced with Firebase',
+    },
+  };
 }
 
 function userStateRef(db, uid) {
