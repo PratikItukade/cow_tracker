@@ -2,10 +2,13 @@ import { getAlerts, initialState, summarizeMilk, today, expectedCalvingDate, nex
 import { isFirebaseConfigured, loginOrCreateUser, onFirebaseAuthChange, pullUserState, pushUserState, syncUserState } from './firebase-service.js';
 
 const STORE_KEY = 'cow-tracker-state-v1';
-const routes = ['home', 'cows', 'milk', 'alerts'];
-
-let showCowForm = false;
-const expandedCowIds = new Set();
+const routes = ['home', 'cows', 'milk', 'alerts', 'export'];
+let showAddCowForm = false;
+let showAddMilkForm = false;
+let showAuthModal = false;
+let isSigningIn = false;
+let authError = '';
+const openCowIds = new Set();
 
 function loadState() {
   return JSON.parse(localStorage.getItem(STORE_KEY) || 'null') || structuredClone(initialState);
@@ -13,6 +16,8 @@ function loadState() {
 
 function saveState(state) {
   state.sync.pending = true;
+  state.sync.localUpdatedAt = Date.now();
+  state.sync.status = state.user?.uid && isFirebaseConfigured() ? 'Pending cloud sync' : 'Saved locally';
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
 }
 
@@ -24,7 +29,6 @@ const uid = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 function getRoute() {
   const value = location.hash.replace('#/', '') || 'home';
   if (value === 'breeding' || value === 'health') return 'cows';
-  if (value === 'export') return 'home';
   return routes.includes(value) ? value : 'home';
 }
 
@@ -57,18 +61,47 @@ function renderShell(content) {
 
 function render() {
   route = getRoute();
-  const pages = { home: renderHome, cows: renderCows, milk: renderMilk, alerts: renderAlerts };
-  const pageRender = pages[route] || renderHome;
-  pageRender();
+  const pages = { home: renderHome, cows: renderCows, milk: renderMilk, alerts: renderAlerts, export: renderExport };
+  pages[route]();
   bindSharedEvents();
 }
 
 function pageTitle(value) {
-  return ({ cows: 'Cow Profiles', milk: 'Milk Session', alerts: 'Alerts & Reminders' })[value];
+  return ({ cows: 'Cow Profiles', milk: 'Milk Session', alerts: 'Alerts & Reminders', export: 'Export' })[value];
 }
 
-function authSection() {
-  return `<section class="auth card"><h2>Single-user login</h2><input id="email" type="email" placeholder="Email" value="${state.user?.email || ''}"><input id="password" type="password" placeholder="Password"><button id="loginBtn">Save login</button><p>${state.user ? `Backup account: ${state.user.email}` : 'Login enables cloud backup when sync is connected.'}</p></section>`;
+function authModal() {
+  const btnContent = isSigningIn
+    ? '<span class="spinner"></span> Signing in...'
+    : 'Sign in / Create account';
+
+  return `<div class="modalOverlay" id="authOverlay">
+    <div class="authModal card">
+      <div class="modalHeader">
+        <h2>Cloud Backup Login</h2>
+        <button id="closeAuthBtn" class="btnClose">✕</button>
+      </div>
+      <p class="authHelperText">Sign in to back up your data to the cloud and access it from any device.</p>
+      <form id="loginForm" onsubmit="return false;">
+        <label>Email Address
+          <input id="email" type="email" placeholder="you@example.com" value="${state.user?.email || ''}" ${isSigningIn ? 'disabled' : ''}>
+        </label>
+        <label>Password
+          <input id="password" type="password" placeholder="Password" ${isSigningIn ? 'disabled' : ''}>
+        </label>
+        <button id="loginBtn" type="button" ${isSigningIn ? 'disabled' : ''}>${btnContent}</button>
+      </form>
+      <p class="authNote"><small>💡 New here? Just enter an email and password to automatically create your account.</small></p>
+      ${authError ? `<p class="authErrorP">⚠️ ${authError}</p>` : ''}
+      <p class="authStatusP">${authStatusText()}</p>
+    </div>
+  </div>`;
+}
+
+function authStatusText() {
+  if (!isFirebaseConfigured()) return 'Firebase config missing — saved locally until src/firebase-config.js is updated.';
+  if (state.user?.email) return `Backup account: ${state.user.email} · ${state.sync?.status || 'Cloud sync ready'}`;
+  return 'Login enables Firebase cloud backup and cross-device sync.';
 }
 
 function renderHome() {
@@ -77,6 +110,7 @@ function renderHome() {
     ${homeCard('cows', '🐄', 'Cow Profiles', `${state.cows.length} cows / heifers`)}
     ${homeCard('milk', '🥛', 'Milk Session', `${state.milk.length} session entries`)}
     ${homeCard('alerts', '🔔', 'Alerts & Reminders', `${alerts.length} active reminders`)}
+    ${homeCard('export', '📤', 'Export', 'CSV and print/PDF reports')}
   </section>`);
 }
 
@@ -91,11 +125,7 @@ function renderCows() {
   renderShell(`<section class="card">
     <div class="cowsHeader">
       <h2>Cow profiles</h2>
-      <div class="headerActions">
-        <button id="exportCowsCsvBtn" class="secBtn">Export CSV</button>
-        <button id="printCowsBtn" class="secBtn">Print / PDF</button>
-        <button id="toggleCowFormBtn" class="addCowBtn">${showCowForm ? '✕ Close' : '+ Add Cow'}</button>
-      </div>
+      <button id="toggleAddCowBtn" class="btnSecondary">${toggleBtnText}</button>
     </div>
     <div id="addCowContainer" class="${addFormClass}">
       <form id="cowForm" class="cowFormCard">
@@ -212,20 +242,94 @@ function profileCard(cow) {
 }
 
 function renderMilk() {
+  const toggleBtnText = showAddMilkForm ? '✕ Close' : '+ Add Milk Entry';
+  const addFormClass = showAddMilkForm ? 'addCowSection open' : 'addCowSection hidden';
+  const sortedMilk = [...state.milk].reverse();
+
   renderShell(`<section class="card">
-    <div class="cardHeader">
+    <div class="cowsHeader">
       <h2>Milk session</h2>
-      <div class="headerActions">
-        <button id="exportMilkCsvBtn" class="secBtn">Export CSV</button>
-        <button id="printMilkBtn" class="secBtn">Print / PDF</button>
-      </div>
+      <button id="toggleAddMilkBtn" class="btnSecondary">${toggleBtnText}</button>
     </div>
-    <form id="milkForm"><input name="date" type="date" value="${today()}" required><select name="session"><option>Morning</option><option>Evening</option></select><input name="quantity" type="number" step="0.1" placeholder="Litres" required><input name="fat" type="number" step="0.1" placeholder="Fat %" required><input name="snf" type="number" step="0.1" placeholder="SNF %" required><button>Add milk</button></form><label>Fat alert <input id="fatThreshold" type="number" step="0.1" value="${state.thresholds.fat}"></label><label>SNF alert <input id="snfThreshold" type="number" step="0.1" value="${state.thresholds.snf}"></label><div class="chart">${summarizeMilk(state.milk).map(bar).join('') || '<p>No milk entries yet.</p>'}</div></section>`);
+
+    <div id="addMilkContainer" class="${addFormClass}">
+      <form id="milkForm" class="cowFormCard">
+        <h3>Add milk entry</h3>
+        <label>Date <input name="date" type="date" value="${today()}" required></label>
+        <label>Session
+          <select name="session">
+            <option>Morning</option>
+            <option>Evening</option>
+          </select>
+        </label>
+        <label>Litres <input name="quantity" type="number" step="0.1" placeholder="Litres" required></label>
+        <label>Fat % <input name="fat" type="number" step="0.1" placeholder="Fat %" required></label>
+        <label>SNF % <input name="snf" type="number" step="0.1" placeholder="SNF %" required></label>
+        <button type="submit">Save Milk Entry</button>
+      </form>
+    </div>
+
+    <div class="thresholdRow">
+      <label>Fat alert <input id="fatThreshold" type="number" step="0.1" value="${state.thresholds.fat}"></label>
+      <label>SNF alert <input id="snfThreshold" type="number" step="0.1" value="${state.thresholds.snf}"></label>
+    </div>
+
+    <div class="tableContainer">
+      ${renderMilkTable(sortedMilk)}
+    </div>
+
+    <div class="chart">
+      <h3>Daily Totals Chart</h3>
+      ${summarizeMilk(state.milk).map(bar).join('') || '<p>No milk entries yet.</p>'}
+    </div>
+  </section>`);
+}
+
+function renderMilkTable(entries = []) {
+  if (!entries.length) return '<p class="emptyText">No milk entries recorded yet.</p>';
+  return `<table class="milkTable">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Session</th>
+        <th>Litres</th>
+        <th>Fat %</th>
+        <th>SNF %</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${entries.map((m) => {
+        const fatLow = Number(m.fat) < Number(state.thresholds.fat);
+        const snfLow = Number(m.snf) < Number(state.thresholds.snf);
+        const alerts = [];
+        if (fatLow) alerts.push('Low Fat');
+        if (snfLow) alerts.push('Low SNF');
+        const statusHtml = alerts.length
+          ? `<span class="badgeWarning">⚠️ ${alerts.join(' & ')}</span>`
+          : `<span class="badgeOk">✓ Normal</span>`;
+        const rowClass = alerts.length ? 'rowAlert' : '';
+
+        return `<tr class="${rowClass}">
+          <td>${m.date}</td>
+          <td>${m.session}</td>
+          <td><strong>${m.quantity} L</strong></td>
+          <td class="${fatLow ? 'valueAlert' : ''}">${m.fat}%</td>
+          <td class="${snfLow ? 'valueAlert' : ''}">${m.snf}%</td>
+          <td>${statusHtml}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table>`;
 }
 
 function renderAlerts() {
   const alerts = getAlerts(state);
   renderShell(`<section class="card"><h2>Alerts & reminders</h2>${alerts.map((a) => `<p class="alert">${a}</p>`).join('') || '<p>No active reminders.</p>'}</section>`);
+}
+
+function renderExport() {
+  renderShell(`<section class="card"><h2>Export</h2><p>Export per-cow breeding/health records and herd-level milk trend data.</p><button id="csvBtn">Download Excel CSV</button><button id="pdfBtn">Print / save PDF</button></section>`);
 }
 
 function bar(row) { return `<div><span>${row.label}</span><meter min="0" max="100" value="${row.quantity}"></meter><b>${row.quantity} L</b></div>`; }
@@ -330,11 +434,8 @@ function bindSharedEvents() {
   });
   document.querySelector('#fatThreshold')?.addEventListener('change', (e) => { state.thresholds.fat = e.target.value; saveState(state); render(); });
   document.querySelector('#snfThreshold')?.addEventListener('change', (e) => { state.thresholds.snf = e.target.value; saveState(state); render(); });
-
-  document.querySelector('#exportCowsCsvBtn')?.addEventListener('click', exportCowsCsv);
-  document.querySelector('#printCowsBtn')?.addEventListener('click', () => print());
-  document.querySelector('#exportMilkCsvBtn')?.addEventListener('click', exportMilkCsv);
-  document.querySelector('#printMilkBtn')?.addEventListener('click', () => print());
+  document.querySelector('#csvBtn')?.addEventListener('click', exportCsv);
+  document.querySelector('#pdfBtn')?.addEventListener('click', () => print());
 }
 
 async function login() {
@@ -389,30 +490,35 @@ async function syncNow() {
   render();
 }
 
-function exportCowsCsv() {
-  const rows = [['record_type','cow_name','status','date','details'],
-    ...state.cows.flatMap((c) => [
-      ['cow', c.name, c.status, '', ''],
-      ...(c.breeding || []).map((b) => ['breeding', c.name, c.status, b.aiDate || b.heatDate || '', `Heat: ${b.heatDate || ''} | AI: ${b.aiDate || ''} | Status: ${b.pregnancyStatus || ''}`]),
-      ...(c.health || []).map((h) => ['health', c.name, c.status, h.date || '', `Type: ${h.type || ''} | Next Due: ${h.nextDue || ''} | Notes: ${h.notes || ''}`])
-    ])
-  ];
-  downloadBlob(rows, 'cow-profiles-export.csv');
+async function pullFromCloud() {
+  const remote = await pullUserState(state.user.uid);
+  if (remote) {
+    state = {
+      ...state,
+      cows: remote.cows || [],
+      milk: remote.milk || [],
+      thresholds: remote.thresholds || state.thresholds,
+      sync: { pending: false, localUpdatedAt: remote.localUpdatedAt || Date.now(), lastSyncedAt: new Date().toISOString(), status: 'Loaded Firebase backup' },
+    };
+  } else {
+    await pushUserState(state.user.uid, state);
+    state.sync = { ...state.sync, pending: false, lastSyncedAt: new Date().toISOString(), status: 'Created Firebase backup' };
+  }
+  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  render();
 }
-
-function exportMilkCsv() {
-  const rows = [['date','session','quantity','fat','snf'],
-    ...state.milk.map((m) => [m.date, m.session, m.quantity, m.fat, m.snf])
-  ];
-  downloadBlob(rows, 'milk-sessions-export.csv');
-}
-
-function downloadBlob(rows, filename) {
-  const blob = new Blob([rows.map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n')], { type: 'text/csv' });
-  const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: filename });
+function exportCsv() {
+  const rows = [['type','cow','date','session','quantity','fat','snf','notes'], ...state.milk.map((m) => ['milk','',m.date,m.session,m.quantity,m.fat,m.snf,'']), ...state.cows.flatMap((c) => [...(c.breeding || []).map((b) => ['breeding',c.name,b.aiDate || b.heatDate,'','','','',b.pregnancyStatus]), ...(c.health || []).map((h) => ['health',c.name,h.date,'','','','',`${h.type} ${h.notes || ''}`])])];
+  const blob = new Blob([rows.map((r) => r.join(',')).join('\n')], { type: 'text/csv' });
+  const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: 'dairy-herd-export.csv' });
   link.click();
 }
 
+onFirebaseAuthChange(async (user) => {
+  if (!user) return;
+  state.user = { uid: user.uid, email: user.email };
+  await pullFromCloud();
+});
 window.addEventListener('hashchange', render);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
 render();
