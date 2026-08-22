@@ -1,7 +1,7 @@
 import { getAlerts, initialState, summarizeMilk, today, expectedCalvingDate, nextHeatDate } from './domain.js';
 import { isFirebaseConfigured, loginOrCreateUser, logoutUser, onFirebaseAuthChange, pullUserState, pushUserState, syncUserState } from './firebase-service.js';
 
-const routes = ['home', 'cows', 'milk', 'alerts', 'export'];
+const routes = ['home', 'cows', 'milk', 'alerts'];
 let showAddCowForm = false;
 let showAddMilkForm = false;
 let showAuthModal = false;
@@ -82,6 +82,7 @@ const uid = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 function getRoute() {
   const value = location.hash.replace('#/', '') || 'home';
   if (value === 'breeding' || value === 'health') return 'cows';
+  if (value === 'export') return 'home';
   return routes.includes(value) ? value : 'home';
 }
 
@@ -114,13 +115,13 @@ function renderShell(content) {
 
 function render() {
   route = getRoute();
-  const pages = { home: renderHome, cows: renderCows, milk: renderMilk, alerts: renderAlerts, export: renderExport };
+  const pages = { home: renderHome, cows: renderCows, milk: renderMilk, alerts: renderAlerts };
   pages[route]();
   bindSharedEvents();
 }
 
 function pageTitle(value) {
-  return ({ cows: 'Cow Profiles', milk: 'Milk Session', alerts: 'Alerts & Reminders', export: 'Export' })[value];
+  return ({ cows: 'Cow Profiles', milk: 'Milk Session', alerts: 'Alerts & Reminders' })[value];
 }
 
 function authModal() {
@@ -181,7 +182,6 @@ function renderHome() {
     ${homeCard('cows', '🐄', 'Cow Profiles', `${state.cows.length} cows / heifers`)}
     ${homeCard('milk', '🥛', 'Milk Session', `${state.milk.length} session entries`)}
     ${homeCard('alerts', '🔔', 'Alerts & Reminders', `${alerts.length} active reminders`)}
-    ${homeCard('export', '📤', 'Export', 'CSV and print/PDF reports')}
   </section>`);
 }
 
@@ -196,7 +196,11 @@ function renderCows() {
   renderShell(`<section class="card">
     <div class="cowsHeader">
       <h2>Cow profiles</h2>
-      <button id="toggleAddCowBtn" class="btnSecondary">${toggleBtnText}</button>
+      <div class="headerBtnGroup">
+        <button id="exportCowsCsvBtn" class="btnSecondary">📥 Export CSV</button>
+        <button id="printBtn" class="btnSecondary">🖨️ Print / PDF</button>
+        <button id="toggleAddCowBtn" class="btnSecondary">${toggleBtnText}</button>
+      </div>
     </div>
     <div id="addCowContainer" class="${addFormClass}">
       <form id="cowForm" class="cowFormCard">
@@ -320,7 +324,11 @@ function renderMilk() {
   renderShell(`<section class="card">
     <div class="cowsHeader">
       <h2>Milk session</h2>
-      <button id="toggleAddMilkBtn" class="btnSecondary">${toggleBtnText}</button>
+      <div class="headerBtnGroup">
+        <button id="exportMilkCsvBtn" class="btnSecondary">📥 Export CSV</button>
+        <button id="printBtn" class="btnSecondary">🖨️ Print / PDF</button>
+        <button id="toggleAddMilkBtn" class="btnSecondary">${toggleBtnText}</button>
+      </div>
     </div>
 
     <div id="addMilkContainer" class="${addFormClass}">
@@ -399,9 +407,6 @@ function renderAlerts() {
   renderShell(`<section class="card"><h2>Alerts & reminders</h2>${alerts.map((a) => `<p class="alert">${a}</p>`).join('') || '<p>No active reminders.</p>'}</section>`);
 }
 
-function renderExport() {
-  renderShell(`<section class="card"><h2>Export</h2><p>Export per-cow breeding/health records and herd-level milk trend data.</p><button id="csvBtn">Download Excel CSV</button><button id="pdfBtn">Print / save PDF</button></section>`);
-}
 
 function bar(row) { return `<div><span>${row.label}</span><meter min="0" max="100" value="${row.quantity}"></meter><b>${row.quantity} L</b></div>`; }
 function formData(form) { return Object.fromEntries(new FormData(form).entries()); }
@@ -506,8 +511,9 @@ function bindSharedEvents() {
   });
   document.querySelector('#fatThreshold')?.addEventListener('change', (e) => { state.thresholds.fat = e.target.value; saveState(state); render(); });
   document.querySelector('#snfThreshold')?.addEventListener('change', (e) => { state.thresholds.snf = e.target.value; saveState(state); render(); });
-  document.querySelector('#csvBtn')?.addEventListener('click', exportCsv);
-  document.querySelector('#pdfBtn')?.addEventListener('click', () => print());
+  document.querySelector('#exportCowsCsvBtn')?.addEventListener('click', () => exportCsv('cows'));
+  document.querySelector('#exportMilkCsvBtn')?.addEventListener('click', () => exportCsv('milk'));
+  document.querySelectorAll('#printBtn').forEach((btn) => btn.onclick = () => print());
 }
 
 async function login() {
@@ -585,10 +591,31 @@ async function pullFromCloudForUser(user) {
   saveState(state);
   render();
 }
-function exportCsv() {
-  const rows = [['type','cow','date','session','quantity','fat','snf','notes'], ...state.milk.map((m) => ['milk','',m.date,m.session,m.quantity,m.fat,m.snf,'']), ...state.cows.flatMap((c) => [...(c.breeding || []).map((b) => ['breeding',c.name,b.aiDate || b.heatDate,'','','','',b.pregnancyStatus]), ...(c.health || []).map((h) => ['health',c.name,h.date,'','','','',`${h.type} ${h.notes || ''}`])])];
+function exportCsv(type = 'all') {
+  let rows = [['type','cow','date','session','quantity','fat','snf','notes']];
+  let filename = 'dairy-herd-export.csv';
+
+  if (type === 'milk') {
+    rows.push(...state.milk.map((m) => ['milk', '', m.date, m.session, m.quantity, m.fat, m.snf, '']));
+    filename = 'dairy-milk-export.csv';
+  } else if (type === 'cows') {
+    rows.push(...state.cows.flatMap((c) => [
+      ...(c.breeding || []).map((b) => ['breeding', c.name, b.aiDate || b.heatDate, '', '', '', '', b.pregnancyStatus || '']),
+      ...(c.health || []).map((h) => ['health', c.name, h.date, '', '', '', '', `${h.type} ${h.notes || ''}`])
+    ]));
+    filename = 'dairy-cows-export.csv';
+  } else {
+    rows.push(
+      ...state.milk.map((m) => ['milk', '', m.date, m.session, m.quantity, m.fat, m.snf, '']),
+      ...state.cows.flatMap((c) => [
+        ...(c.breeding || []).map((b) => ['breeding', c.name, b.aiDate || b.heatDate, '', '', '', '', b.pregnancyStatus || '']),
+        ...(c.health || []).map((h) => ['health', c.name, h.date, '', '', '', '', `${h.type} ${h.notes || ''}`])
+      ])
+    );
+  }
+
   const blob = new Blob([rows.map((r) => r.join(',')).join('\n')], { type: 'text/csv' });
-  const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: 'dairy-herd-export.csv' });
+  const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: filename });
   link.click();
 }
 
