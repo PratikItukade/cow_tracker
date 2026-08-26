@@ -1,8 +1,7 @@
 import { getAlerts, initialState, summarizeMilk, today, expectedCalvingDate, nextHeatDate } from './domain.js';
-import { isFirebaseConfigured, loginOrCreateUser, onFirebaseAuthChange, pullUserState, pushUserState, syncUserState } from './firebase-service.js';
+import { isFirebaseConfigured, loginOrCreateUser, logoutUser, onFirebaseAuthChange, pullUserState, pushUserState, syncUserState } from './firebase-service.js';
 
-const STORE_KEY = 'cow-tracker-state-v1';
-const routes = ['home', 'cows', 'milk', 'alerts', 'export'];
+const routes = ['home', 'cows', 'milk', 'alerts'];
 let showAddCowForm = false;
 let showAddMilkForm = false;
 let showAuthModal = false;
@@ -10,18 +9,72 @@ let isSigningIn = false;
 let authError = '';
 const openCowIds = new Set();
 
-function loadState() {
-  return JSON.parse(localStorage.getItem(STORE_KEY) || 'null') || structuredClone(initialState);
+function getStoreKey(user) {
+  if (user?.uid) return `cow-tracker-state-uid-${user.uid}`;
+  if (user?.email) return `cow-tracker-state-email-${user.email.toLowerCase().trim()}`;
+  return 'cow-tracker-state-anon';
 }
 
-function saveState(state) {
-  state.sync.pending = true;
-  state.sync.localUpdatedAt = Date.now();
-  state.sync.status = state.user?.uid && isFirebaseConfigured() ? 'Pending cloud sync' : 'Saved locally';
-  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+function migrateLegacyState() {
+  const legacy = localStorage.getItem('cow-tracker-state-v1');
+  if (!legacy) return;
+  try {
+    const parsed = JSON.parse(legacy);
+    if (parsed && typeof parsed === 'object') {
+      const key = getStoreKey(parsed.user);
+      if (!localStorage.getItem(key)) {
+        localStorage.setItem(key, JSON.stringify(parsed));
+      }
+    }
+  } catch (err) {
+    console.error('Failed to migrate legacy state:', err);
+  }
+  localStorage.removeItem('cow-tracker-state-v1');
 }
 
-let state = loadState();
+function getActiveUserFromStorage() {
+  try {
+    const stored = localStorage.getItem('cow-tracker-active-user');
+    return stored ? JSON.parse(stored) : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadStateForUser(user) {
+  migrateLegacyState();
+  const storeKey = getStoreKey(user);
+  const stored = localStorage.getItem(storeKey);
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      parsed.user = user || null;
+      return parsed;
+    } catch (err) {
+      console.error('Failed to parse stored state:', err);
+    }
+  }
+  const fresh = structuredClone(initialState);
+  fresh.user = user || null;
+  return fresh;
+}
+
+function saveState(stateToSave) {
+  const activeUser = stateToSave.user || null;
+  const storeKey = getStoreKey(activeUser);
+  stateToSave.sync.pending = true;
+  stateToSave.sync.localUpdatedAt = Date.now();
+  stateToSave.sync.status = activeUser?.uid && isFirebaseConfigured() ? 'Pending cloud sync' : 'Saved locally';
+  localStorage.setItem(storeKey, JSON.stringify(stateToSave));
+  if (activeUser) {
+    localStorage.setItem('cow-tracker-active-user', JSON.stringify(activeUser));
+  } else {
+    localStorage.removeItem('cow-tracker-active-user');
+  }
+}
+
+let activeUser = getActiveUserFromStorage();
+let state = loadStateForUser(activeUser);
 let route = getRoute();
 const app = document.querySelector('#app');
 const uid = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
@@ -29,6 +82,7 @@ const uid = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 function getRoute() {
   const value = location.hash.replace('#/', '') || 'home';
   if (value === 'breeding' || value === 'health') return 'cows';
+  if (value === 'export') return 'home';
   return routes.includes(value) ? value : 'home';
 }
 
@@ -43,6 +97,7 @@ function renderShell(content) {
     <header>
       <div><p class="eyebrow">Offline-first PWA</p><h1>${title}</h1></div>
       <div class="headerActions">
+        <button id="exportAllBtn" class="btnSecondary" title="Export all data (CSV)">📥 Export All</button>
         <button id="accountBtn" class="btnSecondary">${accountLabel}</button>
         <button id="syncBtn">${navigator.onLine ? 'Sync now' : 'Offline'}</button>
       </div>
@@ -61,19 +116,37 @@ function renderShell(content) {
 
 function render() {
   route = getRoute();
-  const pages = { home: renderHome, cows: renderCows, milk: renderMilk, alerts: renderAlerts, export: renderExport };
+  const pages = { home: renderHome, cows: renderCows, milk: renderMilk, alerts: renderAlerts };
   pages[route]();
   bindSharedEvents();
 }
 
 function pageTitle(value) {
-  return ({ cows: 'Cow Profiles', milk: 'Milk Session', alerts: 'Alerts & Reminders', export: 'Export' })[value];
+  return ({ cows: 'Cow Profiles', milk: 'Milk Session', alerts: 'Alerts & Reminders' })[value];
 }
 
 function authModal() {
   const btnContent = isSigningIn
     ? '<span class="spinner"></span> Signing in...'
     : 'Sign in / Create account';
+
+  const isLoggedIn = Boolean(state.user?.email);
+
+  if (isLoggedIn) {
+    return `<div class="modalOverlay" id="authOverlay">
+      <div class="authModal card">
+        <div class="modalHeader">
+          <h2>Account Status</h2>
+          <button id="closeAuthBtn" class="btnClose">✕</button>
+        </div>
+        <p class="authHelperText">Signed in as <strong>${state.user.email}</strong></p>
+        <p class="authStatusP">${authStatusText()}</p>
+        <div class="modalActions" style="margin-top: 1rem; display: flex; gap: 0.5rem; justify-content: flex-end;">
+          <button id="logoutBtn" type="button" class="btnSecondary">Sign Out</button>
+        </div>
+      </div>
+    </div>`;
+  }
 
   return `<div class="modalOverlay" id="authOverlay">
     <div class="authModal card">
@@ -110,7 +183,6 @@ function renderHome() {
     ${homeCard('cows', '🐄', 'Cow Profiles', `${state.cows.length} cows / heifers`)}
     ${homeCard('milk', '🥛', 'Milk Session', `${state.milk.length} session entries`)}
     ${homeCard('alerts', '🔔', 'Alerts & Reminders', `${alerts.length} active reminders`)}
-    ${homeCard('export', '📤', 'Export', 'CSV and print/PDF reports')}
   </section>`);
 }
 
@@ -125,7 +197,11 @@ function renderCows() {
   renderShell(`<section class="card">
     <div class="cowsHeader">
       <h2>Cow profiles</h2>
-      <button id="toggleAddCowBtn" class="btnSecondary">${toggleBtnText}</button>
+      <div class="headerBtnGroup">
+        <button id="exportCowsCsvBtn" class="btnSecondary">📥 Export CSV</button>
+        <button id="printBtn" class="btnSecondary">🖨️ Print / PDF</button>
+        <button id="toggleAddCowBtn" class="btnSecondary">${toggleBtnText}</button>
+      </div>
     </div>
     <div id="addCowContainer" class="${addFormClass}">
       <form id="cowForm" class="cowFormCard">
@@ -249,7 +325,11 @@ function renderMilk() {
   renderShell(`<section class="card">
     <div class="cowsHeader">
       <h2>Milk session</h2>
-      <button id="toggleAddMilkBtn" class="btnSecondary">${toggleBtnText}</button>
+      <div class="headerBtnGroup">
+        <button id="exportMilkCsvBtn" class="btnSecondary">📥 Export CSV</button>
+        <button id="printBtn" class="btnSecondary">🖨️ Print / PDF</button>
+        <button id="toggleAddMilkBtn" class="btnSecondary">${toggleBtnText}</button>
+      </div>
     </div>
 
     <div id="addMilkContainer" class="${addFormClass}">
@@ -328,9 +408,6 @@ function renderAlerts() {
   renderShell(`<section class="card"><h2>Alerts & reminders</h2>${alerts.map((a) => `<p class="alert">${a}</p>`).join('') || '<p>No active reminders.</p>'}</section>`);
 }
 
-function renderExport() {
-  renderShell(`<section class="card"><h2>Export</h2><p>Export per-cow breeding/health records and herd-level milk trend data.</p><button id="csvBtn">Download Excel CSV</button><button id="pdfBtn">Print / save PDF</button></section>`);
-}
 
 function bar(row) { return `<div><span>${row.label}</span><meter min="0" max="100" value="${row.quantity}"></meter><b>${row.quantity} L</b></div>`; }
 function formData(form) { return Object.fromEntries(new FormData(form).entries()); }
@@ -347,6 +424,7 @@ function readCowPhoto(input) {
 function bindSharedEvents() {
   document.querySelectorAll('.featureCard').forEach((card) => card.onclick = () => navigate(card.dataset.route));
   document.querySelector('#loginBtn')?.addEventListener('click', login);
+  document.querySelector('#logoutBtn')?.addEventListener('click', logout);
   document.querySelector('#closeAuthBtn')?.addEventListener('click', () => {
     showAuthModal = false;
     authError = '';
@@ -434,8 +512,10 @@ function bindSharedEvents() {
   });
   document.querySelector('#fatThreshold')?.addEventListener('change', (e) => { state.thresholds.fat = e.target.value; saveState(state); render(); });
   document.querySelector('#snfThreshold')?.addEventListener('change', (e) => { state.thresholds.snf = e.target.value; saveState(state); render(); });
-  document.querySelector('#csvBtn')?.addEventListener('click', exportCsv);
-  document.querySelector('#pdfBtn')?.addEventListener('click', () => print());
+  document.querySelector('#exportAllBtn')?.addEventListener('click', () => exportCsv('all'));
+  document.querySelector('#exportCowsCsvBtn')?.addEventListener('click', () => exportCsv('cows'));
+  document.querySelector('#exportMilkCsvBtn')?.addEventListener('click', () => exportCsv('milk'));
+  document.querySelectorAll('#printBtn').forEach((btn) => btn.onclick = () => print());
 }
 
 async function login() {
@@ -455,7 +535,9 @@ async function login() {
 
   try {
     if (!isFirebaseConfigured()) {
-      state.user = { email };
+      const localUid = `local-${btoa(email.toLowerCase())}`;
+      const user = { uid: localUid, email: email.toLowerCase() };
+      state = loadStateForUser(user);
       saveState(state);
       isSigningIn = false;
       showAuthModal = false;
@@ -463,8 +545,9 @@ async function login() {
       return;
     }
     const credential = await loginOrCreateUser(email, password);
-    state.user = { uid: credential.user.uid, email: credential.user.email };
-    await pullFromCloud();
+    const user = { uid: credential.user.uid, email: credential.user.email };
+    state = loadStateForUser(user);
+    await pullFromCloudForUser(user);
     isSigningIn = false;
     showAuthModal = false;
     render();
@@ -475,10 +558,24 @@ async function login() {
   }
 }
 
+async function logout() {
+  try {
+    await logoutUser();
+  } catch (err) {
+    console.error('Logout error:', err);
+  }
+  localStorage.removeItem('cow-tracker-active-user');
+  state = loadStateForUser(null);
+  openCowIds.clear();
+  showAuthModal = false;
+  authError = '';
+  render();
+}
+
 async function syncNow() {
   if (!state.user?.uid || !isFirebaseConfigured()) {
     state.sync = { ...state.sync, pending: false, lastSyncedAt: new Date().toISOString(), status: 'Local sync only — Firebase not connected' };
-    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+    saveState(state);
     render();
     return;
   }
@@ -486,38 +583,54 @@ async function syncNow() {
   render();
   state = await syncUserState(state.user.uid, state);
   state.sync = { ...state.sync, pending: false, lastSyncedAt: new Date().toISOString(), status: 'Synced with Firebase' };
-  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  saveState(state);
   render();
 }
 
-async function pullFromCloud() {
-  const remote = await pullUserState(state.user.uid);
-  if (remote) {
-    state = {
-      ...state,
-      cows: remote.cows || [],
-      milk: remote.milk || [],
-      thresholds: remote.thresholds || state.thresholds,
-      sync: { pending: false, localUpdatedAt: remote.localUpdatedAt || Date.now(), lastSyncedAt: new Date().toISOString(), status: 'Loaded Firebase backup' },
-    };
-  } else {
-    await pushUserState(state.user.uid, state);
-    state.sync = { ...state.sync, pending: false, lastSyncedAt: new Date().toISOString(), status: 'Created Firebase backup' };
-  }
-  localStorage.setItem(STORE_KEY, JSON.stringify(state));
+async function pullFromCloudForUser(user) {
+  if (!user?.uid || !isFirebaseConfigured()) return;
+  state = await syncUserState(user.uid, state);
+  saveState(state);
   render();
 }
-function exportCsv() {
-  const rows = [['type','cow','date','session','quantity','fat','snf','notes'], ...state.milk.map((m) => ['milk','',m.date,m.session,m.quantity,m.fat,m.snf,'']), ...state.cows.flatMap((c) => [...(c.breeding || []).map((b) => ['breeding',c.name,b.aiDate || b.heatDate,'','','','',b.pregnancyStatus]), ...(c.health || []).map((h) => ['health',c.name,h.date,'','','','',`${h.type} ${h.notes || ''}`])])];
+function exportCsv(type = 'all') {
+  let rows = [['type','cow','date','session','quantity','fat','snf','notes']];
+  let filename = 'dairy-herd-export.csv';
+
+  if (type === 'milk') {
+    rows.push(...state.milk.map((m) => ['milk', '', m.date, m.session, m.quantity, m.fat, m.snf, '']));
+    filename = 'dairy-milk-export.csv';
+  } else if (type === 'cows') {
+    rows.push(...state.cows.flatMap((c) => [
+      ...(c.breeding || []).map((b) => ['breeding', c.name, b.aiDate || b.heatDate, '', '', '', '', b.pregnancyStatus || '']),
+      ...(c.health || []).map((h) => ['health', c.name, h.date, '', '', '', '', `${h.type} ${h.notes || ''}`])
+    ]));
+    filename = 'dairy-cows-export.csv';
+  } else {
+    rows.push(
+      ...state.milk.map((m) => ['milk', '', m.date, m.session, m.quantity, m.fat, m.snf, '']),
+      ...state.cows.flatMap((c) => [
+        ...(c.breeding || []).map((b) => ['breeding', c.name, b.aiDate || b.heatDate, '', '', '', '', b.pregnancyStatus || '']),
+        ...(c.health || []).map((h) => ['health', c.name, h.date, '', '', '', '', `${h.type} ${h.notes || ''}`])
+      ])
+    );
+  }
+
   const blob = new Blob([rows.map((r) => r.join(',')).join('\n')], { type: 'text/csv' });
-  const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: 'dairy-herd-export.csv' });
+  const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: filename });
   link.click();
 }
 
-onFirebaseAuthChange(async (user) => {
-  if (!user) return;
-  state.user = { uid: user.uid, email: user.email };
-  await pullFromCloud();
+onFirebaseAuthChange(async (firebaseUser) => {
+  if (firebaseUser) {
+    const user = { uid: firebaseUser.uid, email: firebaseUser.email };
+    state = loadStateForUser(user);
+    await pullFromCloudForUser(user);
+    render();
+  } else if (state.user?.uid && isFirebaseConfigured()) {
+    state = loadStateForUser(null);
+    render();
+  }
 });
 window.addEventListener('hashchange', render);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
