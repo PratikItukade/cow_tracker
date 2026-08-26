@@ -97,6 +97,7 @@ function renderShell(content) {
     <header>
       <div><p class="eyebrow">Offline-first PWA</p><h1>${title}</h1></div>
       <div class="headerActions">
+        <button id="exportAllBtn" class="btnSecondary" title="Export all data (CSV)">📥 Export All</button>
         <button id="accountBtn" class="btnSecondary">${accountLabel}</button>
         <button id="syncBtn">${navigator.onLine ? 'Sync now' : 'Offline'}</button>
       </div>
@@ -511,6 +512,7 @@ function bindSharedEvents() {
   });
   document.querySelector('#fatThreshold')?.addEventListener('change', (e) => { state.thresholds.fat = e.target.value; saveState(state); render(); });
   document.querySelector('#snfThreshold')?.addEventListener('change', (e) => { state.thresholds.snf = e.target.value; saveState(state); render(); });
+  document.querySelector('#exportAllBtn')?.addEventListener('click', () => exportCsv('all'));
   document.querySelector('#exportCowsCsvBtn')?.addEventListener('click', () => exportCsv('cows'));
   document.querySelector('#exportMilkCsvBtn')?.addEventListener('click', () => exportCsv('milk'));
   document.querySelectorAll('#printBtn').forEach((btn) => btn.onclick = () => print());
