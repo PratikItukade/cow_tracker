@@ -33,16 +33,23 @@ assert.equal(todaySummary.total, 27.5);
 
 // Test getMilkProductionForLastNDays
 const last10 = getMilkProductionForLastNDays(testMilkData, 10, '2026-03-30');
-assert.equal(last10.length, 1);
-assert.equal(last10[0].label, '2026-03-30');
-assert.equal(last10[0].quantity, 27.5);
+assert.equal(last10.length, 10);
+assert.equal(last10[0].label, '2026-03-21');
+assert.equal(last10[0].quantity, 0);
+assert.equal(last10[9].label, '2026-03-30');
+assert.equal(last10[9].quantity, 27.5);
 
 const last20 = getMilkProductionForLastNDays(testMilkData, 20, '2026-03-30');
-assert.equal(last20.length, 2);
-assert.equal(last20[0].label, '2026-03-20');
-assert.equal(last20[1].label, '2026-03-30');
+assert.equal(last20.length, 20);
+assert.equal(last20[0].label, '2026-03-11');
+assert.equal(last20[9].label, '2026-03-20');
+assert.equal(last20[9].quantity, 14.0);
+assert.equal(last20[19].label, '2026-03-30');
+assert.equal(last20[19].quantity, 27.5);
 
 const last30 = getMilkProductionForLastNDays(testMilkData, 30, '2026-03-30');
-assert.equal(last30.length, 3);
+assert.equal(last30.length, 30);
+assert.equal(last30[0].label, '2026-03-01');
+assert.equal(last30[0].quantity, 10.0);
 
 console.log('app logic tests passed');

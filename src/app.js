@@ -506,13 +506,20 @@ function renderMilkLineChart(data = []) {
   }).join('');
 
   const pointsHtml = points.map((pt) => `
-    <circle cx="${pt.x}" cy="${pt.y}" r="5" class="chartDot" />
-    <text x="${pt.x}" y="${pt.y - 10}" class="pointLabel">${pt.quantity}L</text>
+    <circle cx="${pt.x}" cy="${pt.y}" r="${pt.quantity > 0 ? 5 : 3}" class="${pt.quantity > 0 ? 'chartDot' : 'chartDotZero'}" />
+    ${pt.quantity > 0 ? `<text x="${pt.x}" y="${pt.y - 10}" class="pointLabel">${pt.quantity}L</text>` : ''}
   `).join('');
 
-  const xAxisHtml = points.map((pt) => {
-    const dateFormatted = pt.label.slice(5); // e.g. "03-30"
-    return `<text x="${pt.x}" y="${svgHeight - 12}" class="xAxisLabel">${dateFormatted}</text>`;
+  // Depending on number of data points (e.g., 10, 20, 30), step the X-axis tick labels so they don't crowd
+  const tickStep = data.length > 20 ? 5 : data.length > 10 ? 3 : 1;
+  const xAxisHtml = points.map((pt, index) => {
+    const isFirst = index === 0;
+    const isLast = index === points.length - 1;
+    if (isFirst || isLast || index % tickStep === 0) {
+      const dateFormatted = pt.label.slice(5); // e.g. "03-30"
+      return `<text x="${pt.x}" y="${svgHeight - 12}" class="xAxisLabel">${dateFormatted}</text>`;
+    }
+    return '';
   }).join('');
 
   return `

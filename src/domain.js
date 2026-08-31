@@ -27,17 +27,29 @@ export function getTodayMilkSummary(milk, currentDate = today()) {
 }
 
 export function getMilkProductionForLastNDays(milk, days = 10, currentDate = today()) {
-  const endDate = new Date(`${currentDate}T00:00:00`);
+  const endDate = new Date(`${currentDate}T00:00:00Z`);
   const startDate = new Date(endDate);
-  startDate.setDate(startDate.getDate() - (days - 1));
+  startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
 
   const filtered = (milk || []).filter((entry) => {
     if (!entry.date) return false;
-    const entryDate = new Date(`${entry.date}T00:00:00`);
+    const entryDate = new Date(`${entry.date}T00:00:00Z`);
     return entryDate >= startDate && entryDate <= endDate;
   });
 
-  const summarized = summarizeMilk(filtered, 'daily');
-  return summarized.sort((a, b) => a.label.localeCompare(b.label));
+  const summarizedMap = new Map(summarizeMilk(filtered, 'daily').map((row) => [row.label, row]));
+  const result = [];
+
+  for (let d = new Date(startDate); d <= endDate; d.setUTCDate(d.getUTCDate() + 1)) {
+    const label = d.toISOString().slice(0, 10);
+    const existing = summarizedMap.get(label);
+    if (existing) {
+      result.push(existing);
+    } else {
+      result.push({ label, quantity: 0, fat: 0, snf: 0, count: 0 });
+    }
+  }
+
+  return result;
 }
 export function getAlerts(state) { const alerts = []; state.milk.forEach((entry) => { if (Number(entry.fat) < Number(state.thresholds.fat)) alerts.push(`Fat low on ${entry.date} ${entry.session}: ${entry.fat}%`); if (Number(entry.snf) < Number(state.thresholds.snf)) alerts.push(`SNF low on ${entry.date} ${entry.session}: ${entry.snf}%`); }); state.cows.forEach((cow) => { cow.breeding?.forEach((record) => { const heat = nextHeatDate(record.heatDate); const calving = expectedCalvingDate(record.aiDate); if (heat >= today()) alerts.push(`${cow.name}: expected heat around ${heat}`); if (record.pregnancyStatus === 'Pregnant' && calving >= today()) alerts.push(`${cow.name}: expected calving around ${calving}`); }); cow.health?.forEach((record) => { if (record.type === 'Vaccination' && record.nextDue >= today()) alerts.push(`${cow.name}: vaccination due ${record.nextDue}`); }); }); return alerts.slice(0, 8); }
