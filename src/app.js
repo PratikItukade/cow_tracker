@@ -200,9 +200,7 @@ function renderHome() {
     return `<button class="${activeClass}" data-days="${days}">${days} Days</button>`;
   }).join(' ');
 
-  const chartRowsHtml = chartData.length
-    ? chartData.map((row) => `<div><span>${row.label}</span><meter min="0" max="${maxQty}" value="${row.quantity}"></meter><b>${row.quantity} L</b></div>`).join('')
-    : '<p class="emptyText">No milk data recorded for this period.</p>';
+  const chartHtml = renderMilkLineChart(chartData);
 
   renderShell(`
     <section class="homeGrid">
@@ -219,8 +217,8 @@ function renderHome() {
             ${rangeButtons}
           </div>
         </div>
-        <div class="chart">
-          ${chartRowsHtml}
+        <div class="lineChartContainer">
+          ${chartHtml}
         </div>
       </div>
 
@@ -468,6 +466,64 @@ function renderAlerts() {
   renderShell(`<section class="card"><h2>Alerts & reminders</h2>${alerts.map((a) => `<p class="alert">${a}</p>`).join('') || '<p>No active reminders.</p>'}</section>`);
 }
 
+
+function renderMilkLineChart(data = []) {
+  if (!data.length) {
+    return '<p class="emptyText">No milk data recorded for this period.</p>';
+  }
+
+  const svgWidth = 600;
+  const svgHeight = 260;
+  const padding = { top: 30, right: 30, bottom: 40, left: 55 };
+  const graphWidth = svgWidth - padding.left - padding.right;
+  const graphHeight = svgHeight - padding.top - padding.bottom;
+
+  const quantities = data.map((d) => d.quantity);
+  const minVal = Math.min(0, ...quantities);
+  const rawMax = Math.max(...quantities, 10);
+  const maxVal = Math.ceil(rawMax / 10) * 10 || 10;
+
+  const stepsCount = 4;
+  const stepVal = (maxVal - minVal) / stepsCount;
+  const gridYValues = Array.from({ length: stepsCount + 1 }, (_, i) => Math.round(minVal + i * stepVal));
+
+  const points = data.map((d, index) => {
+    const x = data.length > 1
+      ? padding.left + (index / (data.length - 1)) * graphWidth
+      : padding.left + graphWidth / 2;
+    const y = padding.top + graphHeight - ((d.quantity - minVal) / (maxVal - minVal)) * graphHeight;
+    return { x, y, label: d.label, quantity: d.quantity };
+  });
+
+  const pathD = points.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt.x} ${pt.y}`).join(' ');
+
+  const gridLinesHtml = gridYValues.map((val) => {
+    const y = padding.top + graphHeight - ((val - minVal) / (maxVal - minVal)) * graphHeight;
+    return `
+      <line x1="${padding.left}" y1="${y}" x2="${svgWidth - padding.right}" y2="${y}" class="gridLine" />
+      <text x="${padding.left - 8}" y="${y + 4}" class="yAxisLabel">${val}L</text>
+    `;
+  }).join('');
+
+  const pointsHtml = points.map((pt) => `
+    <circle cx="${pt.x}" cy="${pt.y}" r="5" class="chartDot" />
+    <text x="${pt.x}" y="${pt.y - 10}" class="pointLabel">${pt.quantity}L</text>
+  `).join('');
+
+  const xAxisHtml = points.map((pt) => {
+    const dateFormatted = pt.label.slice(5); // e.g. "03-30"
+    return `<text x="${pt.x}" y="${svgHeight - 12}" class="xAxisLabel">${dateFormatted}</text>`;
+  }).join('');
+
+  return `
+    <svg viewBox="0 0 ${svgWidth} ${svgHeight}" class="milkSvgChart" preserveAspectRatio="xMidYMid meet">
+      ${gridLinesHtml}
+      <path d="${pathD}" class="chartLine" />
+      ${pointsHtml}
+      ${xAxisHtml}
+    </svg>
+  `;
+}
 
 function bar(row) { return `<div><span>${row.label}</span><meter min="0" max="100" value="${row.quantity}"></meter><b>${row.quantity} L</b></div>`; }
 function formData(form) { return Object.fromEntries(new FormData(form).entries()); }
