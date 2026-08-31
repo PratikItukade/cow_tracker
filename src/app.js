@@ -1,4 +1,4 @@
-import { getAlerts, initialState, summarizeMilk, today, expectedCalvingDate, nextHeatDate } from './domain.js';
+import { getAlerts, initialState, summarizeMilk, today, expectedCalvingDate, nextHeatDate, getTodayMilkSummary, getMilkProductionForLastNDays } from './domain.js';
 import { isFirebaseConfigured, loginOrCreateUser, logoutUser, onFirebaseAuthChange, pullUserState, pushUserState, syncUserState } from './firebase-service.js';
 
 const routes = ['home', 'cows', 'milk', 'alerts'];
@@ -7,6 +7,7 @@ let showAddMilkForm = false;
 let showAuthModal = false;
 let isSigningIn = false;
 let authError = '';
+let selectedMilkDays = 10;
 const openCowIds = new Set();
 
 function getStoreKey(user) {
@@ -190,11 +191,55 @@ function authStatusText() {
 
 function renderHome() {
   const alerts = getAlerts(state);
-  renderShell(`<section class="homeGrid">
-    ${homeCard('cows', '🐄', 'Cow Profiles', `${state.cows.length} cows / heifers`)}
-    ${homeCard('milk', '🥛', 'Milk Session', `${state.milk.length} session entries`)}
-    ${homeCard('alerts', '🔔', 'Alerts & Reminders', `${alerts.length} active reminders`)}
-  </section>`);
+  const chartData = getMilkProductionForLastNDays(state.milk, selectedMilkDays);
+  const maxQty = Math.max(...chartData.map((d) => d.quantity), 100);
+  const todaySummary = getTodayMilkSummary(state.milk);
+
+  const rangeButtons = [10, 20, 30].map((days) => {
+    const activeClass = selectedMilkDays === days ? 'btnToggle active' : 'btnToggle';
+    return `<button class="${activeClass}" data-days="${days}">${days} Days</button>`;
+  }).join(' ');
+
+  const chartHtml = renderMilkLineChart(chartData);
+
+  renderShell(`
+    <section class="homeGrid">
+      ${homeCard('cows', '🐄', 'Cow Profiles', `${state.cows.length} cows / heifers`)}
+      ${homeCard('milk', '🥛', 'Milk Session', `${state.milk.length} session entries`)}
+      ${homeCard('alerts', '🔔', 'Alerts & Reminders', `${alerts.length} active reminders`)}
+    </section>
+
+    <section class="homeDashboard">
+      <div class="card">
+        <div class="dashboardChartHeader">
+          <h2>📊 Milk Production — Last ${selectedMilkDays} Days</h2>
+          <div class="rangeToggleGroup">
+            ${rangeButtons}
+          </div>
+        </div>
+        <div class="lineChartContainer">
+          ${chartHtml}
+        </div>
+      </div>
+
+      <div class="card todaySummaryCard">
+        <h2>📅 Today's Summary</h2>
+        <div class="summaryRow">
+          <span>Morning Milk:</span>
+          <strong>${todaySummary.morning} L</strong>
+        </div>
+        <div class="summaryRow">
+          <span>Evening Milk:</span>
+          <strong>${todaySummary.evening} L</strong>
+        </div>
+        <hr class="summaryDivider">
+        <div class="summaryRow totalRow">
+          <span>Total Today:</span>
+          <strong>${todaySummary.total} L</strong>
+        </div>
+      </div>
+    </section>
+  `);
 }
 
 function homeCard(routeName, icon, title, summary) {
@@ -422,6 +467,71 @@ function renderAlerts() {
 }
 
 
+function renderMilkLineChart(data = []) {
+  if (!data.length) {
+    return '<p class="emptyText">No milk data recorded for this period.</p>';
+  }
+
+  const svgWidth = 600;
+  const svgHeight = 260;
+  const padding = { top: 30, right: 30, bottom: 40, left: 55 };
+  const graphWidth = svgWidth - padding.left - padding.right;
+  const graphHeight = svgHeight - padding.top - padding.bottom;
+
+  const quantities = data.map((d) => d.quantity);
+  const minVal = Math.min(0, ...quantities);
+  const rawMax = Math.max(...quantities, 10);
+  const maxVal = Math.ceil(rawMax / 10) * 10 || 10;
+
+  const stepsCount = 4;
+  const stepVal = (maxVal - minVal) / stepsCount;
+  const gridYValues = Array.from({ length: stepsCount + 1 }, (_, i) => Math.round(minVal + i * stepVal));
+
+  const points = data.map((d, index) => {
+    const x = data.length > 1
+      ? padding.left + (index / (data.length - 1)) * graphWidth
+      : padding.left + graphWidth / 2;
+    const y = padding.top + graphHeight - ((d.quantity - minVal) / (maxVal - minVal)) * graphHeight;
+    return { x, y, label: d.label, quantity: d.quantity };
+  });
+
+  const pathD = points.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt.x} ${pt.y}`).join(' ');
+
+  const gridLinesHtml = gridYValues.map((val) => {
+    const y = padding.top + graphHeight - ((val - minVal) / (maxVal - minVal)) * graphHeight;
+    return `
+      <line x1="${padding.left}" y1="${y}" x2="${svgWidth - padding.right}" y2="${y}" class="gridLine" />
+      <text x="${padding.left - 8}" y="${y + 4}" class="yAxisLabel">${val}L</text>
+    `;
+  }).join('');
+
+  const pointsHtml = points.map((pt) => `
+    <circle cx="${pt.x}" cy="${pt.y}" r="${pt.quantity > 0 ? 5 : 3}" class="${pt.quantity > 0 ? 'chartDot' : 'chartDotZero'}" />
+    ${pt.quantity > 0 ? `<text x="${pt.x}" y="${pt.y - 10}" class="pointLabel">${pt.quantity}L</text>` : ''}
+  `).join('');
+
+  // Depending on number of data points (e.g., 10, 20, 30), step the X-axis tick labels so they don't crowd
+  const tickStep = data.length > 20 ? 5 : data.length > 10 ? 3 : 1;
+  const xAxisHtml = points.map((pt, index) => {
+    const isFirst = index === 0;
+    const isLast = index === points.length - 1;
+    if (isFirst || isLast || index % tickStep === 0) {
+      const dateFormatted = pt.label.slice(5); // e.g. "03-30"
+      return `<text x="${pt.x}" y="${svgHeight - 12}" class="xAxisLabel">${dateFormatted}</text>`;
+    }
+    return '';
+  }).join('');
+
+  return `
+    <svg viewBox="0 0 ${svgWidth} ${svgHeight}" class="milkSvgChart" preserveAspectRatio="xMidYMid meet">
+      ${gridLinesHtml}
+      <path d="${pathD}" class="chartLine" />
+      ${pointsHtml}
+      ${xAxisHtml}
+    </svg>
+  `;
+}
+
 function bar(row) { return `<div><span>${row.label}</span><meter min="0" max="100" value="${row.quantity}"></meter><b>${row.quantity} L</b></div>`; }
 function formData(form) { return Object.fromEntries(new FormData(form).entries()); }
 function readCowPhoto(input) {
@@ -436,6 +546,15 @@ function readCowPhoto(input) {
 }
 function bindSharedEvents() {
   document.querySelectorAll('.featureCard').forEach((card) => card.onclick = () => navigate(card.dataset.route));
+  document.querySelectorAll('.rangeToggleGroup .btnToggle').forEach((btn) => {
+    btn.onclick = () => {
+      const days = Number(btn.dataset.days);
+      if (days && days !== selectedMilkDays) {
+        selectedMilkDays = days;
+        render();
+      }
+    };
+  });
   document.querySelector('#loginBtn')?.addEventListener('click', login);
   document.querySelector('#logoutBtn')?.addEventListener('click', logout);
   document.querySelector('#closeAuthBtn')?.addEventListener('click', () => {
