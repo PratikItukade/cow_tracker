@@ -1,4 +1,4 @@
-import { getAlerts, initialState, summarizeMilk, today, expectedCalvingDate, nextHeatDate } from './domain.js';
+import { getAlerts, initialState, summarizeMilk, today, expectedCalvingDate, nextHeatDate, getTodayMilkSummary, getMilkProductionForLastNDays } from './domain.js';
 import { isFirebaseConfigured, loginOrCreateUser, logoutUser, onFirebaseAuthChange, pullUserState, pushUserState, syncUserState } from './firebase-service.js';
 
 const routes = ['home', 'cows', 'milk', 'alerts'];
@@ -7,6 +7,7 @@ let showAddMilkForm = false;
 let showAuthModal = false;
 let isSigningIn = false;
 let authError = '';
+let selectedMilkDays = 10;
 const openCowIds = new Set();
 
 function getStoreKey(user) {
@@ -190,11 +191,57 @@ function authStatusText() {
 
 function renderHome() {
   const alerts = getAlerts(state);
-  renderShell(`<section class="homeGrid">
-    ${homeCard('cows', '🐄', 'Cow Profiles', `${state.cows.length} cows / heifers`)}
-    ${homeCard('milk', '🥛', 'Milk Session', `${state.milk.length} session entries`)}
-    ${homeCard('alerts', '🔔', 'Alerts & Reminders', `${alerts.length} active reminders`)}
-  </section>`);
+  const chartData = getMilkProductionForLastNDays(state.milk, selectedMilkDays);
+  const maxQty = Math.max(...chartData.map((d) => d.quantity), 100);
+  const todaySummary = getTodayMilkSummary(state.milk);
+
+  const rangeButtons = [10, 20, 30].map((days) => {
+    const activeClass = selectedMilkDays === days ? 'btnToggle active' : 'btnToggle';
+    return `<button class="${activeClass}" data-days="${days}">${days} Days</button>`;
+  }).join(' ');
+
+  const chartRowsHtml = chartData.length
+    ? chartData.map((row) => `<div><span>${row.label}</span><meter min="0" max="${maxQty}" value="${row.quantity}"></meter><b>${row.quantity} L</b></div>`).join('')
+    : '<p class="emptyText">No milk data recorded for this period.</p>';
+
+  renderShell(`
+    <section class="homeGrid">
+      ${homeCard('cows', '🐄', 'Cow Profiles', `${state.cows.length} cows / heifers`)}
+      ${homeCard('milk', '🥛', 'Milk Session', `${state.milk.length} session entries`)}
+      ${homeCard('alerts', '🔔', 'Alerts & Reminders', `${alerts.length} active reminders`)}
+    </section>
+
+    <section class="homeDashboard">
+      <div class="card">
+        <div class="dashboardChartHeader">
+          <h2>📊 Milk Production — Last ${selectedMilkDays} Days</h2>
+          <div class="rangeToggleGroup">
+            ${rangeButtons}
+          </div>
+        </div>
+        <div class="chart">
+          ${chartRowsHtml}
+        </div>
+      </div>
+
+      <div class="card todaySummaryCard">
+        <h2>📅 Today's Summary</h2>
+        <div class="summaryRow">
+          <span>Morning Milk:</span>
+          <strong>${todaySummary.morning} L</strong>
+        </div>
+        <div class="summaryRow">
+          <span>Evening Milk:</span>
+          <strong>${todaySummary.evening} L</strong>
+        </div>
+        <hr class="summaryDivider">
+        <div class="summaryRow totalRow">
+          <span>Total Today:</span>
+          <strong>${todaySummary.total} L</strong>
+        </div>
+      </div>
+    </section>
+  `);
 }
 
 function homeCard(routeName, icon, title, summary) {
@@ -436,6 +483,15 @@ function readCowPhoto(input) {
 }
 function bindSharedEvents() {
   document.querySelectorAll('.featureCard').forEach((card) => card.onclick = () => navigate(card.dataset.route));
+  document.querySelectorAll('.rangeToggleGroup .btnToggle').forEach((btn) => {
+    btn.onclick = () => {
+      const days = Number(btn.dataset.days);
+      if (days && days !== selectedMilkDays) {
+        selectedMilkDays = days;
+        render();
+      }
+    };
+  });
   document.querySelector('#loginBtn')?.addEventListener('click', login);
   document.querySelector('#logoutBtn')?.addEventListener('click', logout);
   document.querySelector('#closeAuthBtn')?.addEventListener('click', () => {
