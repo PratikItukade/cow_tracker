@@ -41,6 +41,17 @@ function getActiveUserFromStorage() {
   }
 }
 
+function ensureMilkIds(stateToEnsure) {
+  if (Array.isArray(stateToEnsure?.milk)) {
+    stateToEnsure.milk.forEach((entry) => {
+      if (!entry.id) {
+        entry.id = uid();
+      }
+    });
+  }
+  return stateToEnsure;
+}
+
 function loadStateForUser(user) {
   migrateLegacyState();
   const storeKey = getStoreKey(user);
@@ -49,14 +60,14 @@ function loadStateForUser(user) {
     try {
       const parsed = JSON.parse(stored);
       parsed.user = user || null;
-      return parsed;
+      return ensureMilkIds(parsed);
     } catch (err) {
       console.error('Failed to parse stored state:', err);
     }
   }
   const fresh = structuredClone(initialState);
   fresh.user = user || null;
-  return fresh;
+  return ensureMilkIds(fresh);
 }
 
 function saveState(stateToSave) {
@@ -376,6 +387,7 @@ function renderMilkTable(entries = []) {
         <th>Fat %</th>
         <th>SNF %</th>
         <th>Status</th>
+        <th>Actions</th>
       </tr>
     </thead>
     <tbody>
@@ -397,6 +409,7 @@ function renderMilkTable(entries = []) {
           <td class="${fatLow ? 'valueAlert' : ''}">${m.fat}%</td>
           <td class="${snfLow ? 'valueAlert' : ''}">${m.snf}%</td>
           <td>${statusHtml}</td>
+          <td><button class="deleteMilkBtn" data-milk-id="${m.id}">🗑 Delete</button></td>
         </tr>`;
       }).join('')}
     </tbody>
@@ -456,6 +469,18 @@ function bindSharedEvents() {
     showAddCowForm = false;
     saveState(state);
     render();
+  });
+  document.querySelectorAll('.deleteMilkBtn').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const milkId = btn.dataset.milkId;
+      if (window.confirm('Are you sure you want to delete this milk entry?')) {
+        state.milk = state.milk.filter((m) => m.id !== milkId);
+        saveState(state);
+        render();
+      }
+    };
   });
   document.querySelectorAll('.profileCard').forEach((card) => {
     card.ontoggle = () => {
